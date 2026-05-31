@@ -40,6 +40,16 @@ let isMuted        = false;
 let isCamOff       = false;
 let guestConnected = false;
 
+// ── Speaker detection state ────────────────────────────────────────────────
+let audioCtx       = null;
+let localAnalyser  = null;
+let remoteAnalyser = null;
+let detectionMode  = 'off';   // 'off' | 'auto' | 'subtle'
+let autoDetecting  = false;   // true when detection is active
+let activeSpeaker  = null;    // 'local' | 'remote' | null
+let speakTimer     = null;    // delay before switching
+let holdTimer      = null;    // hold after speaker stops
+
 // ── DOM ────────────────────────────────────────────────────────────────────
 
 const canvas  = document.getElementById('studioCanvas');
@@ -149,6 +159,7 @@ async function init() {
     });
     localVid.srcObject = localStream;
     await localVid.play().catch(() => {});
+    setupLocalAnalyser();
   } catch (e) {
     setStatus('Camera/mic access denied — check browser permissions', 'error');
     return;
@@ -204,6 +215,7 @@ async function buildPeerConnection() {
     remoteStream = streams[0];
     remoteVid.srcObject = remoteStream;
     remoteVid.play().catch(() => {});
+    setupRemoteAnalyser();
     setStatus('Connected — ready to record', 'success');
   };
 
@@ -356,6 +368,110 @@ function drawImagePanel(panel) {
   ctx.restore();
 }
 
+// ── Speaker detection ──────────────────────────────────────────────────────
+
+function getAudioCtx() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+
+function setupLocalAnalyser() {
+  try {
+    const ctx = getAudioCtx();
+    localAnalyser = ctx.createAnalyser();
+    localAnalyser.fftSize = 256;
+    ctx.createMediaStreamSource(localStream).connect(localAnalyser);
+  } catch (_) {}
+}
+
+function setupRemoteAnalyser() {
+  try {
+    const ctx = getAudioCtx();
+    remoteAnalyser = ctx.createAnalyser();
+    remoteAnalyser.fftSize = 256;
+    ctx.createMediaStreamSource(remoteStream).connect(remoteAnalyser);
+  } catch (_) {}
+}
+
+function getRMS(analyser) {
+  if (!analyser) return 0;
+  const buf = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteTimeDomainData(buf);
+  let sum = 0;
+  for (const v of buf) { const n = (v - 128) / 128; sum += n * n; }
+  return Math.sqrt(sum / buf.length);
+}
+
+function getSwitchDelay() {
+  const s = parseInt(document.getElementById('sensitivity').value);
+  return 2500 - (s / 100) * 2000; // 2500ms (slow) → 500ms (fast)
+}
+
+function runSpeakerDetection() {
+  if (!autoDetecting || detectionMode === 'off') return;
+
+  const localLevel  = getRMS(localAnalyser);
+  const remoteLevel = getRMS(remoteAnalyser);
+  const THRESHOLD   = 0.012;
+
+  const localTalking  = localLevel  > THRESHOLD;
+  const remoteTalking = remoteLevel > THRESHOLD;
+
+  let dominant = null;
+  if (localTalking && !remoteTalking)  dominant = 'local';
+  else if (remoteTalking && !localTalking) dominant = 'remote';
+  else if (localTalking && remoteTalking)  dominant = localLevel >= remoteLevel ? 'local' : 'remote';
+
+  if (detectionMode === 'subtle') {
+    applySubtleSplit(localLevel, remoteLevel);
+    return;
+  }
+
+  // Auto cut mode
+  if (dominant && dominant !== activeSpeaker) {
+    clearTimeout(speakTimer);
+    speakTimer = setTimeout(() => {
+      clearTimeout(holdTimer);
+      activeSpeaker = dominant;
+      applyAutoSpeakerLayout(dominant);
+    }, getSwitchDelay());
+  } else if (!dominant && activeSpeaker) {
+    clearTimeout(holdTimer);
+    holdTimer = setTimeout(() => {
+      activeSpeaker = null;
+      // Return to split
+      target(panels.local,   0,   BANNER_H, W2,       VH, 1);
+      target(panels.remote,  W2,  BANNER_H, W2,       VH, 1);
+      target(panels.content, CANVAS_W, BANNER_H, W23, VH, 0);
+    }, 2000);
+  }
+}
+
+function applyAutoSpeakerLayout(speaker) {
+  if (speaker === 'local') {
+    // Host full screen
+    target(panels.local,   0,        BANNER_H, CANVAS_W, VH, 1);
+    target(panels.remote,  CANVAS_W, BANNER_H, W2,       VH, 0);
+  } else {
+    // Guest full screen
+    target(panels.remote,  0,        BANNER_H, CANVAS_W, VH, 1);
+    target(panels.local,   CANVAS_W, BANNER_H, W2,       VH, 0);
+  }
+  target(panels.content, CANVAS_W, BANNER_H, W23, VH, 0);
+}
+
+function applySubtleSplit(localLevel, remoteLevel) {
+  const total = localLevel + remoteLevel;
+  let localRatio = 0.5;
+  if (total > 0.005) {
+    localRatio = Math.max(0.33, Math.min(0.67, localLevel / total));
+  }
+  const localW = Math.round(CANVAS_W * localRatio);
+  target(panels.local,   0,      BANNER_H, localW,           VH, 1);
+  target(panels.remote,  localW, BANNER_H, CANVAS_W - localW, VH, 1);
+  target(panels.content, CANVAS_W, BANNER_H, W23, VH, 0);
+}
+
 // ── Layout ─────────────────────────────────────────────────────────────────
 
 function setLayout(layout) {
@@ -365,6 +481,9 @@ function setLayout(layout) {
   document.querySelectorAll('.layout-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.layout === layout);
   });
+  // Pause auto detection for manual layouts, resume for split
+  autoDetecting = detectionMode !== 'off' && layout === LAYOUT.SPLIT;
+  if (!autoDetecting) { clearTimeout(speakTimer); clearTimeout(holdTimer); activeSpeaker = null; }
 }
 
 // ── Content share (screen / video / image) ─────────────────────────────────
@@ -705,6 +824,24 @@ document.getElementById('refreshBtn').addEventListener('click', loadFiles);
 document.querySelectorAll('.layout-btn').forEach(btn => {
   btn.addEventListener('click', () => setLayout(btn.dataset.layout));
 });
+
+// Speaker detection controls
+document.querySelectorAll('input[name="detection"]').forEach(radio => {
+  radio.addEventListener('change', () => {
+    detectionMode = radio.value;
+    const wrap = document.getElementById('sensitivityWrap');
+    wrap.style.display = detectionMode === 'off' ? 'none' : 'block';
+    autoDetecting = detectionMode !== 'off' && currentLayout === LAYOUT.SPLIT;
+    activeSpeaker = null;
+    clearTimeout(speakTimer);
+    clearTimeout(holdTimer);
+    // Reset to split if auto was running
+    if (detectionMode === 'off') applyLayoutTargets(LAYOUT.SPLIT);
+  });
+});
+
+// Run detection 10x per second
+setInterval(runSpeakerDetection, 100);
 
 setInterval(loadFiles, 15000);
 init();
