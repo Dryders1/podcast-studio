@@ -47,6 +47,43 @@
         </section>
 
         <section class="sidebar-section">
+          <h3>Speaker Detection</h3>
+          <div class="detection-options">
+            <label class="radio-option">
+              <input type="radio" name="detection" value="off" checked />
+              <div class="radio-label">
+                Off
+                <small>Manual control only</small>
+              </div>
+            </label>
+            <label class="radio-option">
+              <input type="radio" name="detection" value="auto" />
+              <div class="radio-label">
+                Auto cut
+                <small>Full screen, switches on speech</small>
+              </div>
+            </label>
+            <label class="radio-option">
+              <input type="radio" name="detection" value="subtle" />
+              <div class="radio-label">
+                Subtle
+                <small>Widens active speaker, both stay visible</small>
+              </div>
+            </label>
+          </div>
+          <div class="sensitivity-wrap" id="sensitivityWrap" style="display:none">
+            <div class="sensitivity-row">
+              <span>Sensitivity</span>
+              <div class="sensitivity-track">
+                <span class="sens-label">Slow</span>
+                <input type="range" id="sensitivity" min="0" max="100" value="50" />
+                <span class="sens-label">Fast</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="sidebar-section">
           <h3>Layout</h3>
           <div class="layout-grid">
             <button class="layout-btn active" data-layout="split" title="Side by side">
