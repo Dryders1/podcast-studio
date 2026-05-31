@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Podcast Studio</title>
+  <link rel="stylesheet" href="/css/studio.css">
+</head>
+<body class="landing-body">
+  <div class="landing">
+    <div class="landing-logo">🎙️</div>
+    <h1>Podcast Studio</h1>
+    <p class="landing-sub">Professional remote podcast recording — separate tracks, no plugins</p>
+
+    <div class="landing-cards">
+      <div class="landing-card">
+        <h2>Start a Session</h2>
+        <p>Create a new recording room and invite your guest via link</p>
+        <button id="createBtn" class="btn-primary">Start as Host →</button>
+        <p class="card-error" id="createError"></p>
+      </div>
+
+      <div class="landing-divider">or</div>
+
+      <div class="landing-card">
+        <h2>Join a Session</h2>
+        <p>Enter the room code your host sent you</p>
+        <div class="join-row">
+          <input id="roomInput" type="text" placeholder="e.g. AB12CD34" maxlength="8" spellcheck="false" autocomplete="off" />
+          <button id="joinBtn" class="btn-secondary">Join →</button>
+        </div>
+        <p class="card-error" id="joinError"></p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    document.getElementById('createBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('createBtn');
+      btn.textContent = 'Creating room...';
+      btn.disabled = true;
+      try {
+        const res = await fetch('/room/create', { method: 'POST' });
+        const { roomId } = await res.json();
+        window.location.href = `/host.html?room=${roomId}`;
+      } catch (e) {
+        document.getElementById('createError').textContent = 'Could not create room. Try again.';
+        btn.textContent = 'Start as Host →';
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById('joinBtn').addEventListener('click', () => {
+      const code = document.getElementById('roomInput').value.trim().toUpperCase();
+      if (!code) {
+        document.getElementById('joinError').textContent = 'Please enter a room code.';
+        return;
+      }
+      window.location.href = `/guest.html?room=${code}`;
+    });
+
+    document.getElementById('roomInput').addEventListener('keydown', e => {
+      if (e.key === 'Enter') document.getElementById('joinBtn').click();
+    });
+
+    document.getElementById('roomInput').addEventListener('input', e => {
+      e.target.value = e.target.value.toUpperCase();
+    });
+  </script>
+</body>
+</html>

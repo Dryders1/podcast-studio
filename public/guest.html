@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Podcast Studio — Guest</title>
+  <link rel="stylesheet" href="/css/studio.css">
+</head>
+<body class="studio-body">
+  <div class="studio-layout">
+
+    <header class="studio-header">
+      <div class="header-left">
+        <span class="logo">🎙️ Podcast Studio</span>
+        <span class="room-badge">Room: <strong id="roomCode">—</strong></span>
+        <span class="role-badge guest-badge">GUEST</span>
+      </div>
+      <div id="status" class="status info">Connecting…</div>
+    </header>
+
+    <main class="studio-main">
+      <div class="canvas-wrap canvas-full">
+        <canvas id="studioCanvas"></canvas>
+        <div class="guest-overlay-hint" id="overlayHint">
+          Waiting for host to connect…
+        </div>
+      </div>
+    </main>
+
+    <div id="uploadProgress" class="upload-progress upload-progress-guest" style="display:none">
+      <div class="progress-label-row">
+        <span class="progress-label">Uploading your recording…</span>
+        <span class="progress-pct" id="progressPct">0%</span>
+      </div>
+      <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
+    </div>
+
+    <footer class="studio-controls">
+      <div class="controls-group">
+        <button id="micBtn" class="ctrl-btn" title="Toggle microphone">
+          <span class="ctrl-icon">🎙️</span> Mute Mic
+        </button>
+        <button id="camBtn" class="ctrl-btn" title="Toggle camera">
+          <span class="ctrl-icon">📷</span> Hide Cam
+        </button>
+      </div>
+      <div class="controls-group">
+        <span class="guest-info-label">Host controls recording &amp; layout</span>
+      </div>
+      <div class="controls-group"></div>
+    </footer>
+
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/guest.js"></script>
+</body>
+</html>

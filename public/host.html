@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Podcast Studio — Host</title>
+  <link rel="stylesheet" href="/css/studio.css">
+</head>
+<body class="studio-body">
+  <div class="studio-layout">
+
+    <header class="studio-header">
+      <div class="header-left">
+        <a href="/" class="logo">🎙️ Podcast Studio</a>
+        <span class="room-badge">Room: <strong id="roomCode">—</strong></span>
+        <span class="role-badge host-badge">HOST</span>
+      </div>
+      <div id="status" class="status info">Starting up…</div>
+    </header>
+
+    <main class="studio-main">
+      <div class="canvas-wrap">
+        <canvas id="studioCanvas"></canvas>
+      </div>
+
+      <aside class="studio-sidebar">
+
+        <section class="sidebar-section">
+          <h3>Invite Guest</h3>
+          <div class="invite-row">
+            <input id="inviteLink" type="text" readonly />
+            <button id="copyBtn" class="btn-small">Copy</button>
+          </div>
+          <p class="sidebar-hint">Send this link to your guest — they open it in Chrome</p>
+        </section>
+
+        <section class="sidebar-section">
+          <h3>Layout</h3>
+          <div class="layout-grid">
+            <button class="layout-btn active" data-layout="split" title="Side by side">
+              <span class="li-split"></span>
+              Split
+            </button>
+            <button class="layout-btn" data-layout="host-main" title="You large, guest small">
+              <span class="li-host-main"></span>
+              You Main
+            </button>
+            <button class="layout-btn" data-layout="guest-main" title="Guest large, you small">
+              <span class="li-guest-main"></span>
+              Guest Main
+            </button>
+            <button class="layout-btn" data-layout="screen" title="Your screen, guest small">
+              <span class="li-screen"></span>
+              Screen
+            </button>
+          </div>
+        </section>
+
+        <div id="uploadProgress" class="upload-progress" style="display:none">
+          <div class="progress-label-row">
+            <span class="progress-label">Uploading…</span>
+            <span class="progress-pct" id="progressPct">0%</span>
+          </div>
+          <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
+        </div>
+
+        <section class="sidebar-section files-section">
+          <h3>Recorded Files <button class="btn-refresh" id="refreshBtn" title="Refresh">↻</button></h3>
+          <div id="fileList" class="file-list">
+            <p class="empty-state">No recordings yet</p>
+          </div>
+        </section>
+
+      </aside>
+    </main>
+
+    <footer class="studio-controls">
+      <div class="controls-group">
+        <button id="micBtn" class="ctrl-btn" title="Toggle microphone">
+          <span class="ctrl-icon">🎙️</span> Mute Mic
+        </button>
+        <button id="camBtn" class="ctrl-btn" title="Toggle camera">
+          <span class="ctrl-icon">📷</span> Hide Cam
+        </button>
+        <button id="screenBtn" class="ctrl-btn" title="Share your screen">
+          <span class="ctrl-icon">🖥️</span> Share Screen
+        </button>
+      </div>
+      <div class="controls-group">
+        <button id="recordBtn" class="ctrl-btn record-btn">
+          <span class="rec-dot"></span> Start Recording
+        </button>
+      </div>
+      <div class="controls-group">
+        <span class="guest-status" id="guestStatus">⚪ No guest yet</span>
+      </div>
+    </footer>
+
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/host.js"></script>
+</body>
+</html>
