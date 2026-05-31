@@ -28,6 +28,9 @@ let localStream    = null;
 let remoteStream   = null;
 let screenStream   = null;
 let mediaStream    = null;
+let imageStream    = null;   // captureStream from offscreen canvas (image share)
+let contentImage   = null;   // HTMLImageElement for drawing image locally
+let contentType    = null;   // 'screen' | 'video' | 'image'
 let currentLayout  = LAYOUT.SPLIT;
 let isRecording    = false;
 let recorder       = null;
@@ -220,14 +223,18 @@ function renderLoop() {
   const hasMedia   = mediaStream  && mediaVid.readyState   >= 2;
 
   // Determine what the content panel shows
-  const contentVid = currentLayout === LAYOUT.MEDIA  ? (hasMedia  ? mediaVid  : null)
-                   : currentLayout === LAYOUT.SCREEN  ? (hasScreen ? screenVid : null)
+  const contentVid = contentType === 'video'  ? (hasMedia  ? mediaVid  : null)
+                   : contentType === 'screen' ? (hasScreen ? screenVid : null)
                    : null;
 
   // Draw bottom-up: content first, then cameras on top
-  drawPanel(contentVid,              panels.content, 'Video');
-  drawPanel(hasRemote ? remoteVid : null, panels.remote,  'Guest');
-  drawPanel(hasLocal  ? localVid  : null, panels.local,   'You');
+  if (contentType === 'image' && contentImage) {
+    drawImagePanel(panels.content);
+  } else {
+    drawPanel(contentVid, panels.content, 'Content');
+  }
+  drawPanel(hasRemote ? remoteVid : null, panels.remote, 'Guest');
+  drawPanel(hasLocal  ? localVid  : null, panels.local,  'You');
 
   // Divider line for SPLIT layout (fades with panels)
   if (currentLayout === LAYOUT.SPLIT) {
@@ -291,6 +298,20 @@ function drawRecBadge() {
   ctx.restore();
 }
 
+function drawImagePanel(panel) {
+  const { cX: x, cY: y, cW: w, cH: h, cA: a } = panel;
+  if (w < 2 || h < 2 || a < 0.02) return;
+  ctx.save();
+  ctx.globalAlpha = Math.max(0, Math.min(1, a));
+  ctx.fillStyle = '#000';
+  ctx.fillRect(x, y, w, h);
+  const scale = Math.min(w / contentImage.naturalWidth, h / contentImage.naturalHeight);
+  const iw = contentImage.naturalWidth  * scale;
+  const ih = contentImage.naturalHeight * scale;
+  ctx.drawImage(contentImage, x + (w - iw) / 2, y + (h - ih) / 2, iw, ih);
+  ctx.restore();
+}
+
 // ── Layout ─────────────────────────────────────────────────────────────────
 
 function setLayout(layout) {
@@ -302,9 +323,80 @@ function setLayout(layout) {
   });
 }
 
-// ── Media share ────────────────────────────────────────────────────────────
+// ── Content share (screen / video / image) ─────────────────────────────────
 
-function startMediaShare(file) {
+function showContentMenu() {
+  const menu = document.getElementById('contentMenu');
+  menu.style.display = menu.style.display === 'none' ? 'flex' : 'none';
+}
+
+function hideContentMenu() {
+  document.getElementById('contentMenu').style.display = 'none';
+}
+
+function setShareActive(active) {
+  const btn = document.getElementById('shareContentBtn');
+  btn.classList.toggle('sharing', active);
+  btn.innerHTML = active
+    ? '<span class="ctrl-icon">📤</span> Stop Sharing'
+    : '<span class="ctrl-icon">📤</span> Share Content';
+}
+
+function restoreCameraTrack() {
+  if (pc && localStream) {
+    const track  = localStream.getVideoTracks()[0];
+    const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+    if (sender && track) sender.replaceTrack(track);
+  }
+}
+
+function stopContentShare() {
+  if (contentType === 'screen') {
+    screenStream?.getTracks().forEach(t => t.stop());
+    screenStream = null;
+    screenVid.srcObject = null;
+    socket.emit('screen-share-change', { roomId, active: false });
+  } else if (contentType === 'video') {
+    mediaVid.pause();
+    mediaVid.src = '';
+    mediaStream = null;
+    document.getElementById('mediaControls').style.display = 'none';
+    socket.emit('media-share-change', { roomId, active: false });
+  } else if (contentType === 'image') {
+    imageStream?.getTracks().forEach(t => t.stop());
+    imageStream = null;
+    contentImage = null;
+    socket.emit('media-share-change', { roomId, active: false });
+  }
+  contentType = null;
+  restoreCameraTrack();
+  setShareActive(false);
+  setLayout(LAYOUT.SPLIT);
+}
+
+// Screen / window / tab
+async function startScreenShare() {
+  try {
+    screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+    screenVid.srcObject = screenStream;
+    await screenVid.play().catch(() => {});
+
+    const track  = screenStream.getVideoTracks()[0];
+    const sender = pc?.getSenders().find(s => s.track?.kind === 'video');
+    if (sender && track) sender.replaceTrack(track);
+
+    track.addEventListener('ended', stopContentShare);
+    contentType = 'screen';
+    socket.emit('screen-share-change', { roomId, active: true });
+    setLayout(LAYOUT.SCREEN);
+    setShareActive(true);
+  } catch (e) {
+    if (e.name !== 'NotAllowedError') setStatus('Screen share failed: ' + e.message, 'error');
+  }
+}
+
+// Video file
+function startVideoShare(file) {
   mediaVid.src = URL.createObjectURL(file);
   mediaVid.loop = false;
 
@@ -313,41 +405,21 @@ function startMediaShare(file) {
       ? mediaVid.captureStream()
       : mediaVid.mozCaptureStream();
 
-    if (pc) {
-      const track  = mediaStream.getVideoTracks()[0];
-      const sender = pc.getSenders().find(s => s.track?.kind === 'video');
-      if (sender && track) sender.replaceTrack(track);
-    }
+    const track  = mediaStream.getVideoTracks()[0];
+    const sender = pc?.getSenders().find(s => s.track?.kind === 'video');
+    if (sender && track) sender.replaceTrack(track);
 
     mediaVid.play();
+    contentType = 'video';
     socket.emit('media-share-change', { roomId, active: true });
     setLayout(LAYOUT.MEDIA);
+    setShareActive(true);
     document.getElementById('mediaControls').style.display = 'flex';
-    document.getElementById('mediaBtn').classList.add('sharing');
-    document.getElementById('mediaBtn').innerHTML = '<span class="ctrl-icon">🎬</span> Video Active';
     updateMediaTime();
   }, { once: true });
 
   mediaVid.addEventListener('timeupdate', updateMediaTime);
-  mediaVid.addEventListener('ended', stopMediaShare);
-}
-
-function stopMediaShare() {
-  mediaVid.pause();
-  mediaVid.src = '';
-  mediaStream = null;
-
-  if (pc && localStream) {
-    const track  = localStream.getVideoTracks()[0];
-    const sender = pc.getSenders().find(s => s.track?.kind === 'video');
-    if (sender && track) sender.replaceTrack(track);
-  }
-
-  socket.emit('media-share-change', { roomId, active: false });
-  setLayout(LAYOUT.SPLIT);
-  document.getElementById('mediaControls').style.display = 'none';
-  document.getElementById('mediaBtn').classList.remove('sharing');
-  document.getElementById('mediaBtn').innerHTML = '<span class="ctrl-icon">🎬</span> Share Video';
+  mediaVid.addEventListener('ended', stopContentShare);
 }
 
 function updateMediaTime() {
@@ -358,45 +430,35 @@ function updateMediaTime() {
   document.getElementById('mediaScrubber').value = pct;
 }
 
-// ── Screen share ───────────────────────────────────────────────────────────
+// Image / photo
+function startImageShare(file) {
+  const img = new Image();
+  img.onload = () => {
+    contentImage = img;
 
-async function startScreenShare() {
-  try {
-    screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
-    screenVid.srcObject = screenStream;
-    await screenVid.play().catch(() => {});
+    // Create an offscreen canvas to stream to the guest via WebRTC
+    const offscreen = document.createElement('canvas');
+    offscreen.width  = 1920;
+    offscreen.height = 1080;
+    const oc = offscreen.getContext('2d');
+    oc.fillStyle = '#000';
+    oc.fillRect(0, 0, 1920, 1080);
+    const scale = Math.min(1920 / img.naturalWidth, 1080 / img.naturalHeight);
+    const iw = img.naturalWidth  * scale;
+    const ih = img.naturalHeight * scale;
+    oc.drawImage(img, (1920 - iw) / 2, (1080 - ih) / 2, iw, ih);
 
-    if (pc) {
-      const track  = screenStream.getVideoTracks()[0];
-      const sender = pc.getSenders().find(s => s.track?.kind === 'video');
-      if (sender) sender.replaceTrack(track);
-    }
-
-    screenStream.getVideoTracks()[0].addEventListener('ended', stopScreenShare);
-    socket.emit('screen-share-change', { roomId, active: true });
-    setLayout(LAYOUT.SCREEN);
-    document.getElementById('screenBtn').classList.add('sharing');
-    document.getElementById('screenBtn').innerHTML = '<span class="ctrl-icon">🖥️</span> Stop Sharing';
-  } catch (e) {
-    if (e.name !== 'NotAllowedError') setStatus('Screen share failed: ' + e.message, 'error');
-  }
-}
-
-function stopScreenShare() {
-  screenStream?.getTracks().forEach(t => t.stop());
-  screenStream = null;
-  screenVid.srcObject = null;
-
-  if (pc && localStream) {
-    const track  = localStream.getVideoTracks()[0];
-    const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+    imageStream = offscreen.captureStream(1);
+    const track  = imageStream.getVideoTracks()[0];
+    const sender = pc?.getSenders().find(s => s.track?.kind === 'video');
     if (sender && track) sender.replaceTrack(track);
-  }
 
-  socket.emit('screen-share-change', { roomId, active: false });
-  setLayout(LAYOUT.SPLIT);
-  document.getElementById('screenBtn').classList.remove('sharing');
-  document.getElementById('screenBtn').innerHTML = '<span class="ctrl-icon">🖥️</span> Share Screen';
+    contentType = 'image';
+    socket.emit('media-share-change', { roomId, active: true });
+    setLayout(LAYOUT.MEDIA);
+    setShareActive(true);
+  };
+  img.src = URL.createObjectURL(file);
 }
 
 // ── Recording ──────────────────────────────────────────────────────────────
@@ -522,18 +584,36 @@ document.getElementById('recordBtn').addEventListener('click', () => {
   isRecording ? stopRecording() : startRecording();
 });
 
-document.getElementById('screenBtn').addEventListener('click', () => {
-  screenStream ? stopScreenShare() : startScreenShare();
+// Share Content menu
+document.getElementById('shareContentBtn').addEventListener('click', () => {
+  if (contentType) { stopContentShare(); return; }
+  showContentMenu();
 });
 
-document.getElementById('mediaBtn').addEventListener('click', () => {
-  if (mediaStream) { stopMediaShare(); return; }
+document.getElementById('shareScreenOpt').addEventListener('click', () => {
+  hideContentMenu();
+  startScreenShare();
+});
+
+document.getElementById('shareVideoOpt').addEventListener('click', () => {
+  hideContentMenu();
   document.getElementById('mediaFileInput').click();
+});
+
+document.getElementById('shareImageOpt').addEventListener('click', () => {
+  hideContentMenu();
+  document.getElementById('imageFileInput').click();
 });
 
 document.getElementById('mediaFileInput').addEventListener('change', e => {
   const file = e.target.files[0];
-  if (file) startMediaShare(file);
+  if (file) startVideoShare(file);
+  e.target.value = '';
+});
+
+document.getElementById('imageFileInput').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (file) startImageShare(file);
   e.target.value = '';
 });
 
@@ -547,7 +627,7 @@ document.getElementById('mediaPlayBtn').addEventListener('click', () => {
   }
 });
 
-document.getElementById('mediaStopBtn').addEventListener('click', stopMediaShare);
+document.getElementById('contentStopBtn').addEventListener('click', stopContentShare);
 
 document.getElementById('mediaScrubber').addEventListener('input', e => {
   if (mediaVid.duration) {
