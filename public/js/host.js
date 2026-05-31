@@ -1,8 +1,9 @@
 'use strict';
 
-const CANVAS_W = 1280;
-const CANVAS_H = 720;
-const LERP     = 0.10;   // transition speed per frame (~60 frames to settle)
+const CANVAS_W  = 1280;
+const CANVAS_H  = 720;
+const BANNER_H  = 52;    // height of podcast name banner at top
+const LERP      = 0.10;
 
 const LAYOUT = {
   SPLIT:      'split',
@@ -66,16 +67,17 @@ function makePanel(x, y, w, h, alpha = 1) {
   return { cX:x, cY:y, cW:w, cH:h, cA:alpha, tX:x, tY:y, tW:w, tH:h, tA:alpha };
 }
 
-const W2 = CANVAS_W / 2;
-const W3 = CANVAS_W / 3;
+const W2  = CANVAS_W / 2;
+const W3  = CANVAS_W / 3;
 const W23 = CANVAS_W * 2 / 3;
-const H2 = CANVAS_H / 2;
+const VH  = CANVAS_H - BANNER_H;   // video area height (below banner)
+const H2  = VH / 2;
 
-// Initial state: SPLIT layout
+// Initial state: SPLIT layout — panels start below the banner
 const panels = {
-  local:   makePanel(0,   0,  W2,  CANVAS_H, 1),
-  remote:  makePanel(W2,  0,  W2,  CANVAS_H, 1),
-  content: makePanel(CANVAS_W, 0, W23, CANVAS_H, 0),  // off-screen right, hidden
+  local:   makePanel(0,          BANNER_H, W2,  VH, 1),
+  remote:  makePanel(W2,         BANNER_H, W2,  VH, 1),
+  content: makePanel(CANVAS_W,   BANNER_H, W23, VH, 0),
 };
 
 function target(panel, x, y, w, h, alpha) {
@@ -97,36 +99,37 @@ function lerp(a, b, t) { return a + (b - a) * t; }
 // Layout definitions — where each panel lives per layout
 function applyLayoutTargets(layout) {
   const PIP_W = 300, PIP_H = 169, PAD = 16;
+  const BY = BANNER_H;                        // banner y offset
+  const BH = VH;                              // video height below banner
   switch (layout) {
     case LAYOUT.SPLIT:
-      target(panels.local,   0,                        0,  W2,   CANVAS_H, 1);
-      target(panels.remote,  W2,                       0,  W2,   CANVAS_H, 1);
-      target(panels.content, CANVAS_W,                 0,  W23,  CANVAS_H, 0);
+      target(panels.local,   0,                       BY,              W2,       BH,  1);
+      target(panels.remote,  W2,                      BY,              W2,       BH,  1);
+      target(panels.content, CANVAS_W,                BY,              W23,      BH,  0);
       break;
 
     case LAYOUT.HOST_MAIN:
-      target(panels.local,   0,                        0,  CANVAS_W, CANVAS_H, 1);
-      target(panels.remote,  CANVAS_W - PIP_W - PAD,   CANVAS_H - PIP_H - PAD, PIP_W, PIP_H, 1);
-      target(panels.content, CANVAS_W,                 0,  W23,  CANVAS_H, 0);
+      target(panels.local,   0,                       BY,              CANVAS_W, BH,  1);
+      target(panels.remote,  CANVAS_W - PIP_W - PAD,  CANVAS_H - PIP_H - PAD, PIP_W, PIP_H, 1);
+      target(panels.content, CANVAS_W,                BY,              W23,      BH,  0);
       break;
 
     case LAYOUT.GUEST_MAIN:
-      target(panels.remote,  0,                        0,  CANVAS_W, CANVAS_H, 1);
-      target(panels.local,   CANVAS_W - PIP_W - PAD,   CANVAS_H - PIP_H - PAD, PIP_W, PIP_H, 1);
-      target(panels.content, CANVAS_W,                 0,  W23,  CANVAS_H, 0);
+      target(panels.remote,  0,                       BY,              CANVAS_W, BH,  1);
+      target(panels.local,   CANVAS_W - PIP_W - PAD,  CANVAS_H - PIP_H - PAD, PIP_W, PIP_H, 1);
+      target(panels.content, CANVAS_W,                BY,              W23,      BH,  0);
       break;
 
     case LAYOUT.SCREEN:
-      target(panels.content, 0,                        0,  CANVAS_W, CANVAS_H, 1);
-      target(panels.remote,  CANVAS_W - PIP_W - PAD,   CANVAS_H - PIP_H - PAD, PIP_W, PIP_H, 1);
-      target(panels.local,   CANVAS_W,                 0,  W2,   CANVAS_H, 0);
+      target(panels.content, 0,                       BY,              CANVAS_W, BH,  1);
+      target(panels.remote,  CANVAS_W - PIP_W - PAD,  CANVAS_H - PIP_H - PAD, PIP_W, PIP_H, 1);
+      target(panels.local,   CANVAS_W,                BY,              W2,       BH,  0);
       break;
 
     case LAYOUT.MEDIA:
-      // Video 2/3 left — host cam top-right — guest cam bottom-right
-      target(panels.content, 0,    0,  W23,  CANVAS_H, 1);
-      target(panels.local,   W23,  0,  W3,   H2,        1);
-      target(panels.remote,  W23,  H2, W3,   H2,        1);
+      target(panels.content, 0,    BY,       W23, BH,  1);
+      target(panels.local,   W23,  BY,       W3,  H2,  1);
+      target(panels.remote,  W23,  BY + H2,  W3,  H2,  1);
       break;
   }
 }
@@ -250,9 +253,50 @@ function renderLoop() {
     ctx.fillRect(panels.local.cX, panels.local.cY + panels.local.cH - 1, panels.local.cW, 2);
   }
 
+  drawBanner();
   if (isRecording) drawRecBadge();
 
   requestAnimationFrame(renderLoop);
+}
+
+function drawBanner() {
+  const name    = document.getElementById('podcastName').value.trim()  || 'Podcast Studio';
+  const episode = document.getElementById('episodeTitle').value.trim() || '';
+  const colour  = document.getElementById('brandColour').value;
+
+  // Background bar
+  ctx.fillStyle = colour;
+  ctx.fillRect(0, 0, CANVAS_W, BANNER_H);
+
+  // Subtle gradient overlay for depth
+  const grad = ctx.createLinearGradient(0, 0, 0, BANNER_H);
+  grad.addColorStop(0, 'rgba(255,255,255,0.08)');
+  grad.addColorStop(1, 'rgba(0,0,0,0.15)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, CANVAS_W, BANNER_H);
+
+  // Mic icon
+  ctx.font = 'bold 22px system-ui';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.fillText('🎙️', 18, BANNER_H / 2);
+
+  // Podcast name
+  ctx.font = 'bold 22px system-ui';
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'left';
+  ctx.fillText(name, 52, BANNER_H / 2);
+
+  // Episode title (right aligned)
+  if (episode) {
+    ctx.font = '15px system-ui';
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    ctx.textAlign = 'right';
+    ctx.fillText(episode, CANVAS_W - 20, BANNER_H / 2);
+  }
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
 }
 
 function drawPanel(video, panel, label) {
