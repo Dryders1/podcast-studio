@@ -85,6 +85,16 @@
         <button id="screenBtn" class="ctrl-btn" title="Share your screen">
           <span class="ctrl-icon">🖥️</span> Share Screen
         </button>
+        <button id="mediaBtn" class="ctrl-btn" title="Share a video file">
+          <span class="ctrl-icon">🎬</span> Share Video
+        </button>
+        <input id="mediaFileInput" type="file" accept="video/*" style="display:none" />
+      </div>
+      <div class="controls-group" id="mediaControls" style="display:none">
+        <button id="mediaPlayBtn" class="ctrl-btn">▶ Play</button>
+        <span class="media-time" id="mediaTime">0:00 / 0:00</span>
+        <input id="mediaScrubber" type="range" min="0" max="100" value="0" class="media-scrubber" />
+        <button id="mediaStopBtn" class="ctrl-btn ctrl-btn-danger">✕ Stop Video</button>
       </div>
       <div class="controls-group">
         <button id="recordBtn" class="ctrl-btn record-btn">
