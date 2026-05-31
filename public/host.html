@@ -82,19 +82,45 @@
         <button id="camBtn" class="ctrl-btn" title="Toggle camera">
           <span class="ctrl-icon">📷</span> Hide Cam
         </button>
-        <button id="screenBtn" class="ctrl-btn" title="Share your screen">
-          <span class="ctrl-icon">🖥️</span> Share Screen
-        </button>
-        <button id="mediaBtn" class="ctrl-btn" title="Share a video file">
-          <span class="ctrl-icon">🎬</span> Share Video
-        </button>
+
+        <!-- Share Content button + popup menu -->
+        <div class="share-content-wrap" id="shareContentWrap">
+          <button id="shareContentBtn" class="ctrl-btn" title="Share content with your guest">
+            <span class="ctrl-icon">📤</span> Share Content
+          </button>
+          <div class="content-menu" id="contentMenu" style="display:none">
+            <button class="content-menu-item" id="shareScreenOpt">
+              <span class="cm-icon">🖥️</span>
+              <span class="cm-label">
+                Screen, window or tab
+                <small>Share anything on your screen</small>
+              </span>
+            </button>
+            <button class="content-menu-item" id="shareVideoOpt">
+              <span class="cm-icon">🎬</span>
+              <span class="cm-label">
+                Video file
+                <small>Play a video from your computer</small>
+              </span>
+            </button>
+            <button class="content-menu-item" id="shareImageOpt">
+              <span class="cm-icon">🖼️</span>
+              <span class="cm-label">
+                Image / photo
+                <small>Show a still image or graphic</small>
+              </span>
+            </button>
+          </div>
+        </div>
+
         <input id="mediaFileInput" type="file" accept="video/*" style="display:none" />
+        <input id="imageFileInput" type="file" accept="image/*" style="display:none" />
       </div>
       <div class="controls-group" id="mediaControls" style="display:none">
         <button id="mediaPlayBtn" class="ctrl-btn">▶ Play</button>
         <span class="media-time" id="mediaTime">0:00 / 0:00</span>
         <input id="mediaScrubber" type="range" min="0" max="100" value="0" class="media-scrubber" />
-        <button id="mediaStopBtn" class="ctrl-btn ctrl-btn-danger">✕ Stop Video</button>
+        <button id="contentStopBtn" class="ctrl-btn ctrl-btn-danger">✕ Stop Sharing</button>
       </div>
       <div class="controls-group">
         <button id="recordBtn" class="ctrl-btn record-btn">
