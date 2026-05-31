@@ -40,6 +40,8 @@ let isMuted        = false;
 let isCamOff       = false;
 let guestConnected = false;
 
+let pipStyle = 'pip'; // 'pip' | 'full'
+
 // ── Speaker detection state ────────────────────────────────────────────────
 let audioCtx       = null;
 let localAnalyser  = null;
@@ -119,15 +121,25 @@ function applyLayoutTargets(layout) {
       break;
 
     case LAYOUT.HOST_MAIN:
-      target(panels.local,   0,                       BY,              CANVAS_W, BH,  1);
-      target(panels.remote,  CANVAS_W - PIP_W - PAD,  CANVAS_H - PIP_H - PAD, PIP_W, PIP_H, 1);
-      target(panels.content, CANVAS_W,                BY,              W23,      BH,  0);
+      if (pipStyle === 'full') {
+        target(panels.local,   0,        BY, CANVAS_W, BH,    1);
+        target(panels.remote,  CANVAS_W, BY, W2,       BH,    0);
+      } else {
+        target(panels.local,   0,                      BY,              CANVAS_W, BH,    1);
+        target(panels.remote,  CANVAS_W - PIP_W - PAD, CANVAS_H - PIP_H - PAD, PIP_W, PIP_H, 1);
+      }
+      target(panels.content, CANVAS_W, BY, W23, BH, 0);
       break;
 
     case LAYOUT.GUEST_MAIN:
-      target(panels.remote,  0,                       BY,              CANVAS_W, BH,  1);
-      target(panels.local,   CANVAS_W - PIP_W - PAD,  CANVAS_H - PIP_H - PAD, PIP_W, PIP_H, 1);
-      target(panels.content, CANVAS_W,                BY,              W23,      BH,  0);
+      if (pipStyle === 'full') {
+        target(panels.remote, 0,        BY, CANVAS_W, BH,    1);
+        target(panels.local,  CANVAS_W, BY, W2,       BH,    0);
+      } else {
+        target(panels.remote, 0,                      BY,              CANVAS_W, BH,    1);
+        target(panels.local,  CANVAS_W - PIP_W - PAD, CANVAS_H - PIP_H - PAD, PIP_W, PIP_H, 1);
+      }
+      target(panels.content, CANVAS_W, BY, W23, BH, 0);
       break;
 
     case LAYOUT.SCREEN:
@@ -823,6 +835,16 @@ document.getElementById('refreshBtn').addEventListener('click', loadFiles);
 
 document.querySelectorAll('.layout-btn').forEach(btn => {
   btn.addEventListener('click', () => setLayout(btn.dataset.layout));
+});
+
+// Spotlight style
+document.querySelectorAll('input[name="pipStyle"]').forEach(radio => {
+  radio.addEventListener('change', () => {
+    pipStyle = radio.value;
+    if (currentLayout === LAYOUT.HOST_MAIN || currentLayout === LAYOUT.GUEST_MAIN) {
+      applyLayoutTargets(currentLayout);
+    }
+  });
 });
 
 // Speaker detection controls
