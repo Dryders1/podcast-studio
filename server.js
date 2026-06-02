@@ -95,6 +95,37 @@ app.post('/upload/:roomId', (req, res) => {
   });
 });
 
+// Chunked/progressive upload — appends each chunk to the file as it arrives,
+// so a full recording never has to sit in browser memory. Much safer for long
+// sessions and weaker machines.
+app.post('/upload-chunk/:roomId/:filename',
+  express.raw({ type: () => true, limit: '50mb' }),
+  (req, res) => {
+    if (!roomExists(req.params.roomId)) {
+      return res.status(404).json({ error: 'Room not found' });
+    }
+    const safeName = safeFilename(req.params.filename);
+    if (!/\.webm$/i.test(safeName)) {
+      return res.status(400).json({ error: 'Only .webm recordings are allowed' });
+    }
+    const dir = path.join(uploadsDir, req.params.roomId);
+    fs.mkdirSync(dir, { recursive: true });
+    const fp = path.join(dir, safeName);
+    if (!isInsideUploads(fp)) {
+      return res.status(400).json({ error: 'Invalid path' });
+    }
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+      return res.status(400).json({ error: 'Empty chunk' });
+    }
+    try {
+      fs.appendFileSync(fp, req.body);
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: 'Write failed' });
+    }
+  }
+);
+
 app.get('/room/:roomId/files', (req, res) => {
   if (!roomExists(req.params.roomId)) {
     return res.status(404).json({ error: 'Room not found' });
