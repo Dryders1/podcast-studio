@@ -144,8 +144,15 @@ async function init() {
   socket = io();
 
   socket.on('joined', () => setStatus('Joined room — waiting for host…', 'info'));
-  socket.on('error',      msg => setStatus('Error: ' + msg, 'error'));
-  socket.on('join-error', msg => setStatus(msg || 'Could not join room', 'error'));
+  socket.on('error', msg => setStatus('Error: ' + msg, 'error'));
+  socket.on('join-error', msg => {
+    setStatus(msg || 'Could not join room', 'warning');
+    // If the host simply hasn't opened the room yet, keep retrying quietly
+    clearTimeout(window._rejoinTimer);
+    window._rejoinTimer = setTimeout(() => {
+      socket.emit('join-room', { roomId, role: 'guest' });
+    }, 3000);
+  });
 
   socket.on('signal', async (data) => {
     if (!pc) await buildPeerConnection();
