@@ -172,6 +172,7 @@ async function init() {
     localVid.srcObject = localStream;
     await localVid.play().catch(() => {});
     setupLocalAnalyser();
+    await populateDevices();
   } catch (e) {
     setStatus('Camera/mic access denied — check browser permissions', 'error');
     return;
@@ -415,6 +416,85 @@ function getRMS(analyser) {
   return Math.sqrt(sum / buf.length);
 }
 
+// ── Device selection + mic meter ───────────────────────────────────────────
+
+async function populateDevices() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams = devices.filter(d => d.kind === 'videoinput');
+    const mics = devices.filter(d => d.kind === 'audioinput');
+
+    const camSel = document.getElementById('cameraSelect');
+    const micSel = document.getElementById('micSelect');
+    const curCam = localStream?.getVideoTracks()[0]?.getSettings().deviceId;
+    const curMic = localStream?.getAudioTracks()[0]?.getSettings().deviceId;
+
+    camSel.innerHTML = '';
+    cams.forEach((d, i) => {
+      const o = document.createElement('option');
+      o.value = d.deviceId;
+      o.textContent = d.label || `Camera ${i + 1}`;
+      if (d.deviceId === curCam) o.selected = true;
+      camSel.appendChild(o);
+    });
+
+    micSel.innerHTML = '';
+    mics.forEach((d, i) => {
+      const o = document.createElement('option');
+      o.value = d.deviceId;
+      o.textContent = d.label || `Microphone ${i + 1}`;
+      if (d.deviceId === curMic) o.selected = true;
+      micSel.appendChild(o);
+    });
+  } catch (_) {}
+}
+
+async function switchDevices() {
+  const camId = document.getElementById('cameraSelect').value;
+  const micId = document.getElementById('micSelect').value;
+  try {
+    const newStream = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: camId ? { exact: camId } : undefined,
+               width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
+      audio: { deviceId: micId ? { exact: micId } : undefined,
+               echoCancellation: true, noiseSuppression: true, sampleRate: 48000 },
+    });
+
+    const newV = newStream.getVideoTracks()[0];
+    const newA = newStream.getAudioTracks()[0];
+
+    // Swap tracks into the peer connection (skip video if currently sharing content)
+    if (pc) {
+      if (!contentType && newV) {
+        const vs = pc.getSenders().find(s => s.track?.kind === 'video');
+        if (vs) vs.replaceTrack(newV);
+      }
+      const as = pc.getSenders().find(s => s.track?.kind === 'audio');
+      if (as && newA) as.replaceTrack(newA);
+    }
+
+    // Stop old tracks and adopt the new stream
+    localStream.getTracks().forEach(t => t.stop());
+    localStream = newStream;
+    localVid.srcObject = localStream;
+    await localVid.play().catch(() => {});
+
+    setupLocalAnalyser();             // rebuild meter + detection source
+    setStatus('Device switched', 'success');
+  } catch (e) {
+    setStatus('Could not switch device', 'error');
+  }
+}
+
+function updateMicMeter() {
+  const fill = document.getElementById('micMeterFill');
+  if (!fill || !localAnalyser) return;
+  const level = getRMS(localAnalyser);
+  const pct = Math.min(100, Math.round(level * 280));
+  fill.style.width = pct + '%';
+  fill.classList.toggle('hot', pct > 85);
+}
+
 function getSwitchDelay() {
   const s = parseInt(document.getElementById('sensitivity').value);
   return 2500 - (s / 100) * 2000; // 2500ms (slow) → 500ms (fast)
@@ -644,10 +724,19 @@ function getMimeType() {
     .find(t => MediaRecorder.isTypeSupported(t)) || '';
 }
 
+// Chunked recording: each piece is uploaded to the server as it's produced,
+// so the full file never sits in browser memory. A crash loses only seconds.
+let recFilename    = null;
+let uploadQueue    = [];
+let queueRunning   = false;
+
 function startRecording() {
   if (isRecording) return;
   isRecording = true;
-  chunks = [];
+  uploadQueue = [];
+  const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  recFilename = `host-${ts}.webm`;
+
   try {
     recorder = new MediaRecorder(localStream, {
       mimeType: getMimeType(),
@@ -659,8 +748,12 @@ function startRecording() {
     isRecording = false;
     return;
   }
-  recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-  recorder.start(1000);
+
+  recorder.ondataavailable = e => {
+    if (e.data && e.data.size > 0) { uploadQueue.push(e.data); processQueue(); }
+  };
+  recorder.start(2000); // emit a chunk every 2 seconds
+
   socket.emit('recording-start', { roomId });
   const btn = document.getElementById('recordBtn');
   btn.classList.add('active');
@@ -668,26 +761,58 @@ function startRecording() {
   setStatus('Recording…', 'recording');
 }
 
+async function processQueue() {
+  if (queueRunning) return;
+  queueRunning = true;
+  isUploading = true;
+  while (uploadQueue.length) {
+    const chunk = uploadQueue.shift();
+    try {
+      await fetch(`/upload-chunk/${roomId}/${encodeURIComponent(recFilename)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: chunk,
+      });
+    } catch (_) {
+      // Re-queue the chunk and pause briefly before retrying
+      uploadQueue.unshift(chunk);
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  }
+  queueRunning = false;
+  if (!isRecording) isUploading = false;
+}
+
 function stopRecording() {
   if (!isRecording) return;
   isRecording = false;
   socket.emit('recording-stop', { roomId });
+
   recorder.onstop = async () => {
-    const blob = new Blob(chunks, { type: getMimeType() });
-    const ts   = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-    await uploadFile(blob, `host-${ts}.webm`);
+    setStatus('Saving…', 'info');
+    // Wait for any remaining chunks to finish uploading
+    while (uploadQueue.length || queueRunning) {
+      await new Promise(r => setTimeout(r, 200));
+    }
+    isUploading = false;
+    setStatus('Saved — recording uploaded', 'success');
+    loadFiles();
   };
   recorder.stop();
+
   const btn = document.getElementById('recordBtn');
   btn.classList.remove('active');
   btn.innerHTML = '<span class="rec-dot"></span> Start Recording';
-  setStatus('Recording stopped — uploading…', 'info');
+  setStatus('Recording stopped — saving…', 'info');
 }
 
 // ── Upload ─────────────────────────────────────────────────────────────────
 
+let isUploading = false;
+
 function uploadFile(blob, filename) {
   return new Promise(resolve => {
+    isUploading = true;
     const form = new FormData();
     form.append('file', blob, filename);
     const xhr = new XMLHttpRequest();
@@ -696,16 +821,51 @@ function uploadFile(blob, filename) {
       if (e.lengthComputable) showProgress(Math.round(e.loaded / e.total * 100));
     };
     xhr.onload = () => {
+      isUploading = false;
       showProgress(100);
       setStatus(`Uploaded: ${filename}`, 'success');
       loadFiles();
       setTimeout(hideProgress, 3000);
       resolve();
     };
-    xhr.onerror = () => { setStatus('Upload failed', 'error'); hideProgress(); resolve(); };
+    xhr.onerror = () => { isUploading = false; setStatus('Upload failed', 'error'); hideProgress(); resolve(); };
     showProgress(0);
     xhr.send(form);
   });
+}
+
+// Warn before closing if an upload is still running
+window.addEventListener('beforeunload', e => {
+  if (isUploading || isRecording) {
+    e.preventDefault();
+    e.returnValue = 'A recording or upload is still in progress. Leave anyway?';
+    return e.returnValue;
+  }
+});
+
+// Download every recorded file in the room, one after another
+async function downloadAll() {
+  try {
+    const files = await fetch(`/room/${roomId}/files`).then(r => r.json());
+    if (!Array.isArray(files) || !files.length) {
+      setStatus('No files to download yet', 'warning');
+      return;
+    }
+    for (const f of files) {
+      if (typeof f.url !== 'string' || !f.url.startsWith('/download/')) continue;
+      const a = document.createElement('a');
+      a.href = f.url;
+      a.download = f.name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // Small gap so the browser queues each download
+      await new Promise(r => setTimeout(r, 600));
+    }
+    setStatus('Downloading all recordings…', 'success');
+  } catch (_) {
+    setStatus('Could not download files', 'error');
+  }
 }
 
 function showProgress(pct) {
@@ -857,6 +1017,14 @@ document.getElementById('camBtn').addEventListener('click', () => {
 
 document.getElementById('copyBtn').addEventListener('click', copyLink);
 document.getElementById('refreshBtn').addEventListener('click', loadFiles);
+document.getElementById('downloadAllBtn').addEventListener('click', downloadAll);
+
+document.getElementById('cameraSelect').addEventListener('change', switchDevices);
+document.getElementById('micSelect').addEventListener('change', switchDevices);
+// Refresh the device list if hardware is plugged/unplugged
+navigator.mediaDevices.addEventListener('devicechange', populateDevices);
+// Live mic level meter
+setInterval(updateMicMeter, 80);
 
 document.querySelectorAll('.layout-btn').forEach(btn => {
   btn.addEventListener('click', () => setLayout(btn.dataset.layout));
@@ -885,6 +1053,57 @@ document.querySelectorAll('input[name="detection"]').forEach(radio => {
     // Reset to split if auto was running
     if (detectionMode === 'off') applyLayoutTargets(LAYOUT.SPLIT);
   });
+});
+
+// ── Keyboard shortcuts (for Logitech console / hotkeys) ─────────────────────
+// Each maps to an existing on-screen control so behaviour stays in sync.
+// Map these same keys on your console in Logi Options+.
+
+function clickEl(id) {
+  const el = document.getElementById(id);
+  if (el) el.click();
+}
+
+function clickLayout(layout) {
+  const btn = document.querySelector(`.layout-btn[data-layout="${layout}"]`);
+  if (btn) btn.click();
+}
+
+document.addEventListener('keydown', (e) => {
+  // Don't fire while typing in a text field (podcast name, episode, room code)
+  const tag = (document.activeElement && document.activeElement.tagName) || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+  switch (e.key.toLowerCase()) {
+    case 'r': e.preventDefault(); clickEl('recordBtn');        break; // Record on/off
+    case 'm': e.preventDefault(); clickEl('micBtn');           break; // Mute mic
+    case 'c': e.preventDefault(); clickEl('camBtn');           break; // Camera on/off
+    case 's': e.preventDefault(); clickEl('shareContentBtn');  break; // Share content
+    case 'd': e.preventDefault(); clickEl('downloadAllBtn');   break; // Download all
+    case '1': e.preventDefault(); clickLayout('split');        break;
+    case '2': e.preventDefault(); clickLayout('host-main');    break; // You Main
+    case '3': e.preventDefault(); clickLayout('guest-main');   break; // Guest Main
+    case '4': e.preventDefault(); clickLayout('screen');       break;
+    case ' ': // Space = play/pause a shared video, if one is active
+      if (document.getElementById('mediaControls').style.display !== 'none') {
+        e.preventDefault();
+        clickEl('mediaPlayBtn');
+      }
+      break;
+    case 'arrowleft':  // nudge shared video back 5s
+      if (mediaStream && mediaVid.duration) {
+        e.preventDefault();
+        mediaVid.currentTime = Math.max(0, mediaVid.currentTime - 5);
+      }
+      break;
+    case 'arrowright': // nudge shared video forward 5s
+      if (mediaStream && mediaVid.duration) {
+        e.preventDefault();
+        mediaVid.currentTime = Math.min(mediaVid.duration, mediaVid.currentTime + 5);
+      }
+      break;
+  }
 });
 
 // Run detection 10x per second
