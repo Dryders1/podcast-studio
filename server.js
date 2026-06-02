@@ -164,8 +164,16 @@ io.on('connection', (socket) => {
   let currentRole = null;
 
   socket.on('join-room', ({ roomId, role } = {}) => {
-    if (!roomExists(roomId) || !VALID_ROLES.has(role)) {
-      socket.emit('join-error', 'Invalid or expired room');
+    if (!isValidRoomId(roomId) || !VALID_ROLES.has(role)) {
+      socket.emit('join-error', 'Invalid room code');
+      return;
+    }
+    // The host is trusted to open/re-open its own room (survives redeploys).
+    // Guests may only join a room the host has already opened.
+    if (role === 'host') {
+      if (!rooms[roomId]) rooms[roomId] = { created: Date.now() };
+    } else if (!roomExists(roomId)) {
+      socket.emit('join-error', 'Waiting for host to open the room…');
       return;
     }
     socket.join(roomId);
