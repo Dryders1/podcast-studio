@@ -142,7 +142,8 @@ async function init() {
   socket = io();
 
   socket.on('joined', () => setStatus('Joined room — waiting for host…', 'info'));
-  socket.on('error',  msg => setStatus('Error: ' + msg, 'error'));
+  socket.on('error',      msg => setStatus('Error: ' + msg, 'error'));
+  socket.on('join-error', msg => setStatus(msg || 'Could not join room', 'error'));
 
   socket.on('signal', async (data) => {
     if (!pc) await buildPeerConnection();

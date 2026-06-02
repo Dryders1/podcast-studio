@@ -180,6 +180,7 @@ async function init() {
   socket = io();
 
   socket.on('joined', () => setStatus('Waiting for guest…', 'info'));
+  socket.on('join-error', msg => setStatus(msg || 'Could not join room', 'error'));
 
   socket.on('peer-joined', async () => {
     guestConnected = true;
@@ -718,13 +719,37 @@ async function loadFiles() {
   try {
     const files = await fetch(`/room/${roomId}/files`).then(r => r.json());
     const list  = document.getElementById('fileList');
-    if (!files.length) { list.innerHTML = '<p class="empty-state">No recordings yet</p>'; return; }
-    list.innerHTML = files.map(f => `
-      <div class="file-item">
-        <span class="file-name">${f.name}</span>
-        <span class="file-size">${fmtBytes(f.size)}</span>
-        <a href="${f.url}" download class="file-dl">↓</a>
-      </div>`).join('');
+    list.textContent = '';
+    if (!files.length) {
+      const p = document.createElement('p');
+      p.className = 'empty-state';
+      p.textContent = 'No recordings yet';
+      list.appendChild(p);
+      return;
+    }
+    // Build safely with textContent so filenames can't inject HTML
+    for (const f of files) {
+      const item = document.createElement('div');
+      item.className = 'file-item';
+
+      const name = document.createElement('span');
+      name.className = 'file-name';
+      name.textContent = f.name;
+
+      const size = document.createElement('span');
+      size.className = 'file-size';
+      size.textContent = fmtBytes(f.size);
+
+      const dl = document.createElement('a');
+      dl.className = 'file-dl';
+      dl.download = '';
+      dl.textContent = '↓';
+      // Only allow our own relative download URLs
+      dl.href = typeof f.url === 'string' && f.url.startsWith('/download/') ? f.url : '#';
+
+      item.append(name, size, dl);
+      list.appendChild(item);
+    }
   } catch (_) {}
 }
 
