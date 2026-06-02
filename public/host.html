@@ -26,6 +26,19 @@
       <aside class="studio-sidebar">
 
         <section class="sidebar-section">
+          <h3>Camera &amp; Mic</h3>
+          <div class="device-fields">
+            <label class="device-label">Camera</label>
+            <select id="cameraSelect" class="device-select"></select>
+            <label class="device-label">Microphone</label>
+            <select id="micSelect" class="device-select"></select>
+            <div class="mic-meter" title="Your mic input level">
+              <div class="mic-meter-fill" id="micMeterFill"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="sidebar-section">
           <h3>Podcast Brand</h3>
           <div class="brand-fields">
             <input id="podcastName"  type="text" placeholder="Your Podcast Name" maxlength="40" />
@@ -138,6 +151,8 @@
           <div id="fileList" class="file-list">
             <p class="empty-state">No recordings yet</p>
           </div>
+          <button id="downloadAllBtn" class="btn-download-all">⬇ Download All</button>
+          <p class="sidebar-hint">Tip: download both tracks to your computer right after the session — server storage is temporary.</p>
         </section>
 
       </aside>
