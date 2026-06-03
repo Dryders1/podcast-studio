@@ -116,6 +116,25 @@ function applyLayoutTargets(layout) {
   const PIP_W = 300, PIP_H = 169, PAD = 16;
   const BY = BANNER_H;                        // banner y offset
   const BH = VH;                              // video height below banner
+
+  // ── While sharing content: content stays the star (2/3 left); the layout
+  //    button chooses which face(s) sit in the right column. Content never
+  //    disappears until "Stop Sharing".
+  if (contentType) {
+    target(panels.content, 0, BY, W23, BH, 1);
+    if (layout === LAYOUT.HOST_MAIN) {            // content + just you
+      target(panels.local,  W23,      BY, W3, BH, 1);
+      target(panels.remote, CANVAS_W, BY, W3, BH, 0);
+    } else if (layout === LAYOUT.GUEST_MAIN) {    // content + just guest
+      target(panels.remote, W23,      BY, W3, BH, 1);
+      target(panels.local,  CANVAS_W, BY, W3, BH, 0);
+    } else {                                      // content + both faces stacked
+      target(panels.local,  W23, BY,        W3, H2, 1);
+      target(panels.remote, W23, BY + H2,   W3, H2, 1);
+    }
+    return;
+  }
+
   switch (layout) {
     case LAYOUT.SPLIT:
       target(panels.local,   0,                       BY,              W2,       BH,  1);
@@ -292,18 +311,17 @@ function renderLoop(now) {
     else           drawPanel(d.video, d.panel, d.label);
   }
 
-  // Divider line for SPLIT layout (fades with panels)
-  if (currentLayout === LAYOUT.SPLIT) {
+  // Centre divider for the camera-only SPLIT layout
+  if (currentLayout === LAYOUT.SPLIT && !contentType) {
     const alpha = Math.min(panels.local.cA, panels.remote.cA);
     ctx.fillStyle = `rgba(255,255,255,${0.08 * alpha})`;
     ctx.fillRect(panels.local.cX + panels.local.cW - 1, 0, 2, CANVAS_H);
   }
 
-  // Thin border between media panel and camera column
-  if (currentLayout === LAYOUT.MEDIA && panels.content.cA > 0.05) {
+  // Border between the content panel and the face column (while sharing)
+  if (contentType && panels.content.cA > 0.05) {
     ctx.fillStyle = `rgba(255,255,255,${0.06 * panels.content.cA})`;
     ctx.fillRect(panels.content.cX + panels.content.cW - 1, 0, 2, CANVAS_H);
-    ctx.fillRect(panels.local.cX, panels.local.cY + panels.local.cH - 1, panels.local.cW, 2);
   }
 
   drawBanner();
@@ -522,7 +540,7 @@ function getSwitchDelay() {
 }
 
 function runSpeakerDetection() {
-  if (!autoDetecting || detectionMode === 'off') return;
+  if (!autoDetecting || detectionMode === 'off' || contentType) return;
 
   const localLevel  = getRMS(localAnalyser);
   const remoteLevel = getRMS(remoteAnalyser);
@@ -595,8 +613,8 @@ function setLayout(layout) {
   document.querySelectorAll('.layout-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.layout === layout);
   });
-  // Pause auto detection for manual layouts, resume for split
-  autoDetecting = detectionMode !== 'off' && layout === LAYOUT.SPLIT;
+  // Auto speaker detection runs only in plain Split, never while sharing content
+  autoDetecting = detectionMode !== 'off' && layout === LAYOUT.SPLIT && !contentType;
   if (!autoDetecting) { clearTimeout(speakTimer); clearTimeout(holdTimer); activeSpeaker = null; }
 }
 
@@ -648,7 +666,7 @@ async function startScreenShare() {
     await screenVid.play().catch(() => {});
     screenStream.getVideoTracks()[0].addEventListener('ended', stopContentShare);
     contentType = 'screen';
-    setLayout(LAYOUT.MEDIA);   // content + both faces stacked
+    setLayout(LAYOUT.SPLIT);   // content + both faces stacked
     setShareActive(true);
   } catch (e) {
     if (e.name !== 'NotAllowedError') setStatus('Screen share failed: ' + e.message, 'error');
@@ -662,7 +680,7 @@ function startVideoShare(file) {
   mediaVid.addEventListener('loadedmetadata', () => {
     mediaVid.play();
     contentType = 'video';
-    setLayout(LAYOUT.MEDIA);
+    setLayout(LAYOUT.SPLIT);
     setShareActive(true);
     document.getElementById('mediaControls').style.display = 'flex';
     updateMediaTime();
@@ -685,7 +703,7 @@ function startImageShare(file) {
   img.onload = () => {
     contentImage = img;          // drawn directly into the canvas program feed
     contentType = 'image';
-    setLayout(LAYOUT.MEDIA);
+    setLayout(LAYOUT.SPLIT);
     setShareActive(true);
   };
   img.src = URL.createObjectURL(file);
