@@ -3,7 +3,7 @@
 const CANVAS_W  = 1280;
 const CANVAS_H  = 720;
 const BANNER_H  = 52;    // height of podcast name banner at top
-const LERP      = 0.10;
+const LERP      = 1;   // 1 = instant cut between layouts (no slide animation)
 
 const LAYOUT = {
   SPLIT:      'split',

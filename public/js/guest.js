@@ -254,24 +254,7 @@ function renderLoop(now) {
     ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
   }
 
-  // Small low-latency self-view so the guest can frame themselves
-  if (hasLocal) {
-    const w = 220, h = 124, pad = 16;
-    const x = CANVAS_W - w - pad, y = CANVAS_H - h - pad;
-    ctx.save();
-    ctx.shadowColor = 'rgba(0,0,0,0.6)';
-    ctx.shadowBlur  = 12;
-    ctx.fillStyle   = '#000';
-    ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
-    ctx.restore();
-    drawCover(localVid, x, y, w, h);
-    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-    ctx.lineWidth   = 1.5;
-    ctx.strokeRect(x, y, w, h);
-    ctx.fillStyle = 'rgba(255,255,255,0.7)';
-    ctx.font = '11px system-ui';
-    ctx.fillText('You', x + 6, y + h - 6);
-  }
+  // (Guest self-view intentionally removed — the guest never sees themselves.)
 
   if (isRecording) drawRecBadge();
 }
