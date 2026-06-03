@@ -240,7 +240,15 @@ async function buildPeerConnection() {
 
 // ── Render loop ────────────────────────────────────────────────────────────
 
-function renderLoop() {
+// Cap rendering to ~30fps to halve canvas CPU load on modest machines
+const FRAME_MS = 1000 / 30;
+let lastFrameTime = 0;
+
+function renderLoop(now) {
+  requestAnimationFrame(renderLoop);
+  if (now && now - lastFrameTime < FRAME_MS) return;
+  lastFrameTime = now || 0;
+
   stepPanels();
 
   ctx.fillStyle = '#111';
@@ -256,14 +264,18 @@ function renderLoop() {
                    : contentType === 'screen' ? (hasScreen ? screenVid : null)
                    : null;
 
-  // Draw bottom-up: content first, then cameras on top
-  if (contentType === 'image' && contentImage) {
-    drawImagePanel(panels.content);
-  } else {
-    drawPanel(contentVid, panels.content, 'Content');
+  // Draw largest panel first so a smaller picture-in-picture lands on top
+  const drawList = [
+    { isImage: contentType === 'image' && !!contentImage,
+      video: contentVid,                  panel: panels.content, label: 'Content' },
+    { isImage: false, video: hasRemote ? remoteVid : null, panel: panels.remote, label: 'Guest' },
+    { isImage: false, video: hasLocal  ? localVid  : null, panel: panels.local,  label: 'You'   },
+  ];
+  drawList.sort((a, b) => (b.panel.cW * b.panel.cH) - (a.panel.cW * a.panel.cH));
+  for (const d of drawList) {
+    if (d.isImage) drawImagePanel(d.panel);
+    else           drawPanel(d.video, d.panel, d.label);
   }
-  drawPanel(hasRemote ? remoteVid : null, panels.remote, 'Guest');
-  drawPanel(hasLocal  ? localVid  : null, panels.local,  'You');
 
   // Divider line for SPLIT layout (fades with panels)
   if (currentLayout === LAYOUT.SPLIT) {
@@ -281,8 +293,6 @@ function renderLoop() {
 
   drawBanner();
   if (isRecording) drawRecBadge();
-
-  requestAnimationFrame(renderLoop);
 }
 
 function drawBanner() {

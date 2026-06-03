@@ -226,7 +226,15 @@ async function buildPeerConnection() {
 
 // ── Render loop ────────────────────────────────────────────────────────────
 
-function renderLoop() {
+// Cap rendering to ~30fps to ease CPU load
+const FRAME_MS = 1000 / 30;
+let lastFrameTime = 0;
+
+function renderLoop(now) {
+  requestAnimationFrame(renderLoop);
+  if (now && now - lastFrameTime < FRAME_MS) return;
+  lastFrameTime = now || 0;
+
   stepPanels();
 
   ctx.fillStyle = '#111';
@@ -235,9 +243,13 @@ function renderLoop() {
   const hasLocal  = localStream  && localVid.readyState  >= 2;
   const hasRemote = remoteStream && remoteVid.readyState >= 2;
 
-  // Remote always behind local
-  drawPanel(hasRemote ? remoteVid : null, panels.remote, 'Host');
-  drawPanel(hasLocal  ? localVid  : null, panels.local,  'You');
+  // Draw largest panel first so a smaller picture-in-picture lands on top
+  const drawList = [
+    { video: hasRemote ? remoteVid : null, panel: panels.remote, label: 'Host' },
+    { video: hasLocal  ? localVid  : null, panel: panels.local,  label: 'You'  },
+  ];
+  drawList.sort((a, b) => (b.panel.cW * b.panel.cH) - (a.panel.cW * a.panel.cH));
+  for (const d of drawList) drawPanel(d.video, d.panel, d.label);
 
   // Dividers
   const splitAlpha = currentLayout === LAYOUT.SPLIT ? Math.min(panels.remote.cA, panels.local.cA) : 0;
@@ -252,8 +264,6 @@ function renderLoop() {
   }
 
   if (isRecording) drawRecBadge();
-
-  requestAnimationFrame(renderLoop);
 }
 
 function drawPanel(video, panel, label) {
