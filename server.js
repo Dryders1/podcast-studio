@@ -192,6 +192,16 @@ io.on('connection', (socket) => {
     if (inRoom(roomId)) socket.to(roomId).emit('signal', data);
   });
 
+  // Guest sends its available camera/mic list to the host
+  socket.on('guest-devices', ({ roomId, ...data } = {}) => {
+    if (inRoom(roomId)) socket.to(roomId).emit('guest-devices', data);
+  });
+
+  // Host tells the guest to switch camera/mic
+  socket.on('set-guest-device', ({ roomId, kind, deviceId } = {}) => {
+    if (inRoom(roomId)) socket.to(roomId).emit('set-guest-device', { kind, deviceId });
+  });
+
   socket.on('layout-change', ({ roomId, layout } = {}) => {
     if (inRoom(roomId) && VALID_LAYOUTS.has(layout)) {
       socket.to(roomId).emit('layout-change', layout);
