@@ -147,7 +147,14 @@ async function init() {
 
   socket = io();
 
-  socket.on('joined', () => setStatus('Joined room — waiting for host…', 'info'));
+  socket.on('joined', () => { setStatus('Joined room — waiting for host…', 'info'); sendGuestDevices(); });
+
+  // Host asked us to switch camera/mic
+  socket.on('set-guest-device', ({ kind, deviceId } = {}) => {
+    if (kind === 'camera') document.getElementById('cameraSelect').value = deviceId;
+    else if (kind === 'mic') document.getElementById('micSelect').value = deviceId;
+    switchDevices().then(sendGuestDevices);
+  });
   socket.on('error', msg => setStatus('Error: ' + msg, 'error'));
   socket.on('join-error', msg => {
     setStatus(msg || 'Could not join room', 'warning');
@@ -369,6 +376,21 @@ async function populateDevices() {
   } catch (_) {}
 }
 
+// Send the host our list of cameras/mics and which we're currently using
+async function sendGuestDevices() {
+  if (!socket) return;
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cameras = devices.filter(d => d.kind === 'videoinput')
+      .map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Camera ${i + 1}` }));
+    const mics = devices.filter(d => d.kind === 'audioinput')
+      .map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Mic ${i + 1}` }));
+    const curCam = localStream?.getVideoTracks()[0]?.getSettings().deviceId || '';
+    const curMic = localStream?.getAudioTracks()[0]?.getSettings().deviceId || '';
+    socket.emit('guest-devices', { roomId, cameras, mics, curCam, curMic });
+  } catch (_) {}
+}
+
 async function switchDevices() {
   const camId = document.getElementById('cameraSelect').value;
   const micId = document.getElementById('micSelect').value;
@@ -393,6 +415,7 @@ async function switchDevices() {
     await localVid.play().catch(() => {});
     setupLocalAnalyser();
     setStatus('Device switched', 'success');
+    sendGuestDevices();   // keep the host's view of our devices in sync
   } catch (e) {
     setStatus('Could not switch device', 'error');
   }
@@ -550,7 +573,7 @@ document.getElementById('camBtn').addEventListener('click', () => {
 
 document.getElementById('cameraSelect').addEventListener('change', switchDevices);
 document.getElementById('micSelect').addEventListener('change', switchDevices);
-navigator.mediaDevices.addEventListener('devicechange', populateDevices);
+navigator.mediaDevices.addEventListener('devicechange', () => { populateDevices(); sendGuestDevices(); });
 setInterval(updateMicMeter, 80);
 
 init();

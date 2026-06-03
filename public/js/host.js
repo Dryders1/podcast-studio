@@ -242,8 +242,12 @@ async function init() {
     remoteVid.srcObject = null;
     updateGuestStatus(false);
     setStatus('Guest disconnected', 'warning');
+    document.getElementById('guestDevicesSection').style.display = 'none';
     if (pc) { pc.close(); pc = null; }
   });
+
+  // Guest sent us their available cameras/mics
+  socket.on('guest-devices', (data) => populateGuestDevices(data));
 
   socket.emit('join-room', { roomId, role: 'host' });
   renderLoop();
@@ -552,6 +556,27 @@ async function populateDevices() {
       micSel.appendChild(o);
     });
   } catch (_) {}
+}
+
+// Fill the host's "Guest Camera & Mic" dropdowns from the list the guest sent
+function populateGuestDevices(data) {
+  if (!data) return;
+  document.getElementById('guestDevicesSection').style.display = 'block';
+  const camSel = document.getElementById('guestCameraSelect');
+  const micSel = document.getElementById('guestMicSelect');
+
+  const fill = (sel, list, current) => {
+    sel.innerHTML = '';
+    (list || []).forEach(d => {
+      const o = document.createElement('option');
+      o.value = d.deviceId;
+      o.textContent = d.label;
+      if (d.deviceId === current) o.selected = true;
+      sel.appendChild(o);
+    });
+  };
+  fill(camSel, data.cameras, data.curCam);
+  fill(micSel, data.mics, data.curMic);
 }
 
 async function switchDevices() {
@@ -1096,6 +1121,14 @@ document.getElementById('downloadAllBtn').addEventListener('click', downloadAll)
 
 document.getElementById('cameraSelect').addEventListener('change', switchDevices);
 document.getElementById('micSelect').addEventListener('change', switchDevices);
+
+// Host controls the guest's devices
+document.getElementById('guestCameraSelect').addEventListener('change', e => {
+  socket.emit('set-guest-device', { roomId, kind: 'camera', deviceId: e.target.value });
+});
+document.getElementById('guestMicSelect').addEventListener('change', e => {
+  socket.emit('set-guest-device', { roomId, kind: 'mic', deviceId: e.target.value });
+});
 // Refresh the device list if hardware is plugged/unplugged
 navigator.mediaDevices.addEventListener('devicechange', populateDevices);
 // Live mic level meter
