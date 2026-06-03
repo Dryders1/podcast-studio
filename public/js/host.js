@@ -55,6 +55,16 @@ let activeSpeaker  = null;    // 'local' | 'remote' | null
 let speakTimer     = null;    // delay before switching
 let holdTimer      = null;    // hold after speaker stops
 
+// ── Audio mixing graph ─────────────────────────────────────────────────────
+// guestMixDest  = host mic + shared-video audio  → sent to the guest (no echo)
+// programMixDest= host mic + guest + shared-video → for the program recording
+let guestMixDest   = null;
+let programMixDest = null;
+let micSource      = null;
+let guestSource    = null;
+let videoSource    = null;
+let audioGraphReady = false;
+
 // ── DOM ────────────────────────────────────────────────────────────────────
 
 const canvas  = document.getElementById('studioCanvas');
@@ -194,6 +204,8 @@ async function init() {
     localVid.srcObject = localStream;
     await localVid.play().catch(() => {});
     setupLocalAnalyser();
+    setupAudioGraph();
+    if (!canvasStream) canvasStream = canvas.captureStream(30);
     await populateDevices();
   } catch (e) {
     setStatus('Camera/mic access denied — check browser permissions', 'error');
@@ -247,13 +259,15 @@ async function buildPeerConnection() {
   // the full composition (content + both faces), in every layout.
   // Both tracks go in ONE stream so the guest receives video + audio together.
   if (!canvasStream) canvasStream = canvas.captureStream(30);
+  if (!audioGraphReady) setupAudioGraph();
   const programVideo = canvasStream.getVideoTracks()[0];
-  const micAudio     = localStream.getAudioTracks()[0];
-  const programStream = new MediaStream();
-  if (programVideo) programStream.addTrack(programVideo);
-  if (micAudio)     programStream.addTrack(micAudio);
-  if (programVideo) pc.addTrack(programVideo, programStream);
-  if (micAudio)     pc.addTrack(micAudio, programStream);
+  // Guest receives host mic + shared-video audio (NOT their own voice → no echo)
+  const guestAudio   = guestMixDest?.stream.getAudioTracks()[0] || localStream.getAudioTracks()[0];
+  const sendStream = new MediaStream();
+  if (programVideo) sendStream.addTrack(programVideo);
+  if (guestAudio)   sendStream.addTrack(guestAudio);
+  if (programVideo) pc.addTrack(programVideo, sendStream);
+  if (guestAudio)   pc.addTrack(guestAudio, sendStream);
 
   pc.onicecandidate = ({ candidate }) => {
     if (candidate) socket.emit('signal', { roomId, data: { type: 'candidate', candidate } });
@@ -264,6 +278,7 @@ async function buildPeerConnection() {
     remoteVid.srcObject = remoteStream;
     remoteVid.play().catch(() => {});
     setupRemoteAnalyser();
+    connectGuestToGraph();
     setStatus('Connected — ready to record', 'success');
   };
 
@@ -450,6 +465,53 @@ function setupRemoteAnalyser() {
   } catch (_) {}
 }
 
+// Build the two mix destinations and connect the host mic to both.
+function setupAudioGraph() {
+  if (audioGraphReady) return;
+  try {
+    const ctx = getAudioCtx();
+    guestMixDest   = ctx.createMediaStreamDestination();
+    programMixDest = ctx.createMediaStreamDestination();
+    connectMicToGraph();
+    audioGraphReady = true;
+  } catch (_) {}
+}
+
+// (Re)connect the current host mic into both mixes. Called on start and whenever
+// the mic device is switched — the output tracks stay the same, so nothing in
+// the peer connection needs to change.
+function connectMicToGraph() {
+  try {
+    const ctx = getAudioCtx();
+    if (micSource) { try { micSource.disconnect(); } catch (_) {} }
+    micSource = ctx.createMediaStreamSource(localStream);
+    micSource.connect(guestMixDest);
+    micSource.connect(programMixDest);
+  } catch (_) {}
+}
+
+// Guest voice → program mix only (never back to the guest, to avoid echo).
+function connectGuestToGraph() {
+  try {
+    const ctx = getAudioCtx();
+    if (guestSource) { try { guestSource.disconnect(); } catch (_) {} }
+    guestSource = ctx.createMediaStreamSource(remoteStream);
+    guestSource.connect(programMixDest);
+  } catch (_) {}
+}
+
+// Shared-video audio → both mixes (guest hears it) and the speakers (host hears it).
+function ensureVideoSource() {
+  if (videoSource) return;
+  try {
+    const ctx = getAudioCtx();
+    videoSource = ctx.createMediaElementSource(mediaVid);
+    videoSource.connect(guestMixDest);
+    videoSource.connect(programMixDest);
+    videoSource.connect(ctx.destination);   // so the host hears the video too
+  } catch (_) {}
+}
+
 function getRMS(analyser) {
   if (!analyser) return 0;
   const buf = new Uint8Array(analyser.frequencyBinCount);
@@ -503,22 +565,16 @@ async function switchDevices() {
                echoCancellation: true, noiseSuppression: true, sampleRate: 48000 },
     });
 
-    const newA = newStream.getAudioTracks()[0];
-
-    // The camera feeds the canvas (program feed) automatically via localVid, so
-    // we only need to swap the MIC track in the peer connection.
-    if (pc) {
-      const as = pc.getSenders().find(s => s.track?.kind === 'audio');
-      if (as && newA) as.replaceTrack(newA);
-    }
-
-    // Stop old tracks and adopt the new stream
+    // Stop old tracks and adopt the new stream. The camera feeds the canvas
+    // (program feed) and the mic feeds the audio mix — both update automatically,
+    // so nothing in the peer connection needs swapping.
     localStream.getTracks().forEach(t => t.stop());
     localStream = newStream;
     localVid.srcObject = localStream;
     await localVid.play().catch(() => {});
 
     setupLocalAnalyser();             // rebuild meter + detection source
+    connectMicToGraph();              // re-route new mic into the mixes
     setStatus('Device switched', 'success');
   } catch (e) {
     setStatus('Could not switch device', 'error');
@@ -678,6 +734,8 @@ function startVideoShare(file) {
   mediaVid.src = URL.createObjectURL(file);
   mediaVid.loop = false;
   mediaVid.addEventListener('loadedmetadata', () => {
+    getAudioCtx().resume?.();
+    ensureVideoSource();   // route the video's audio to guest + program + speakers
     mediaVid.play();
     contentType = 'video';
     setLayout(LAYOUT.SPLIT);
@@ -716,35 +774,88 @@ function getMimeType() {
     .find(t => MediaRecorder.isTypeSupported(t)) || '';
 }
 
-// Chunked recording: each piece is uploaded to the server as it's produced,
-// so the full file never sits in browser memory. A crash loses only seconds.
-let recFilename    = null;
-let uploadQueue    = [];
-let queueRunning   = false;
+// Chunked recording: each piece uploads as it's produced, so the full file never
+// sits in browser memory. We run TWO recorders at once:
+//   host-….webm     — the host's clean camera + mic
+//   program-….webm  — the composed canvas + full mix (host + guest + shared video)
+let recorders = [];
+
+function makeChunkRecorder(stream, prefix) {
+  const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const filename = `${prefix}-${ts}.webm`;
+  const queue = [];
+  let running = false;
+  let rec = null;
+
+  async function pump() {
+    if (running) return;
+    running = true;
+    while (queue.length) {
+      const chunk = queue.shift();
+      try {
+        await fetch(`/upload-chunk/${roomId}/${encodeURIComponent(filename)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: chunk,
+        });
+      } catch (_) {
+        queue.unshift(chunk);
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
+    running = false;
+  }
+
+  function start() {
+    try {
+      rec = new MediaRecorder(stream, {
+        mimeType: getMimeType(),
+        videoBitsPerSecond: 5_000_000,
+        audioBitsPerSecond: 192_000,
+      });
+    } catch (e) { return false; }
+    rec.ondataavailable = e => { if (e.data && e.data.size > 0) { queue.push(e.data); pump(); } };
+    rec.start(2000);
+    return true;
+  }
+
+  function stop() {
+    return new Promise(resolve => {
+      rec.onstop = async () => {
+        while (queue.length || running) await new Promise(r => setTimeout(r, 200));
+        resolve();
+      };
+      rec.stop();
+    });
+  }
+
+  return { start, stop };
+}
 
 function startRecording() {
   if (isRecording) return;
   isRecording = true;
-  uploadQueue = [];
-  const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-  recFilename = `host-${ts}.webm`;
+  isUploading = true;
+  recorders = [];
 
-  try {
-    recorder = new MediaRecorder(localStream, {
-      mimeType: getMimeType(),
-      videoBitsPerSecond: 5_000_000,   // 5 Mbps — YouTube recommended for 1080p/30
-      audioBitsPerSecond: 192_000,     // 192 kbps audio
-    });
-  } catch (e) {
+  // 1) Clean host camera + mic
+  const hostRec = makeChunkRecorder(localStream, 'host');
+  if (!hostRec.start()) {
     setStatus('Recording not supported in this browser', 'error');
-    isRecording = false;
+    isRecording = false; isUploading = false;
     return;
   }
+  recorders.push(hostRec);
 
-  recorder.ondataavailable = e => {
-    if (e.data && e.data.size > 0) { uploadQueue.push(e.data); processQueue(); }
-  };
-  recorder.start(2000); // emit a chunk every 2 seconds
+  // 2) Program feed: composed canvas + full audio mix
+  const programStream = new MediaStream();
+  if (canvasStream) canvasStream.getVideoTracks().forEach(t => programStream.addTrack(t));
+  const progAudio = programMixDest?.stream.getAudioTracks()[0];
+  if (progAudio) programStream.addTrack(progAudio);
+  if (programStream.getVideoTracks().length) {
+    const programRec = makeChunkRecorder(programStream, 'program');
+    if (programRec.start()) recorders.push(programRec);
+  }
 
   socket.emit('recording-start', { roomId });
   const btn = document.getElementById('recordBtn');
@@ -753,49 +864,21 @@ function startRecording() {
   setStatus('Recording…', 'recording');
 }
 
-async function processQueue() {
-  if (queueRunning) return;
-  queueRunning = true;
-  isUploading = true;
-  while (uploadQueue.length) {
-    const chunk = uploadQueue.shift();
-    try {
-      await fetch(`/upload-chunk/${roomId}/${encodeURIComponent(recFilename)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body: chunk,
-      });
-    } catch (_) {
-      // Re-queue the chunk and pause briefly before retrying
-      uploadQueue.unshift(chunk);
-      await new Promise(r => setTimeout(r, 1000));
-    }
-  }
-  queueRunning = false;
-  if (!isRecording) isUploading = false;
-}
-
-function stopRecording() {
+async function stopRecording() {
   if (!isRecording) return;
   isRecording = false;
   socket.emit('recording-stop', { roomId });
 
-  recorder.onstop = async () => {
-    setStatus('Saving…', 'info');
-    // Wait for any remaining chunks to finish uploading
-    while (uploadQueue.length || queueRunning) {
-      await new Promise(r => setTimeout(r, 200));
-    }
-    isUploading = false;
-    setStatus('Saved — recording uploaded', 'success');
-    loadFiles();
-  };
-  recorder.stop();
-
   const btn = document.getElementById('recordBtn');
   btn.classList.remove('active');
   btn.innerHTML = '<span class="rec-dot"></span> Start Recording';
-  setStatus('Recording stopped — saving…', 'info');
+  setStatus('Saving…', 'info');
+
+  await Promise.all(recorders.map(r => r.stop()));
+  recorders = [];
+  isUploading = false;
+  setStatus('Saved — recordings uploaded', 'success');
+  loadFiles();
 }
 
 // ── Upload ─────────────────────────────────────────────────────────────────
