@@ -15,7 +15,11 @@ const LAYOUT = {
 const ICE = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun.relay.metered.ca:80' },
+    { urls: 'turn:global.relay.metered.ca:80',               username: 'f7de7dd72c1ab64e2cae90a2', credential: '/lGT+0H5L5zbllWL' },
+    { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: 'f7de7dd72c1ab64e2cae90a2', credential: '/lGT+0H5L5zbllWL' },
+    { urls: 'turn:global.relay.metered.ca:443',              username: 'f7de7dd72c1ab64e2cae90a2', credential: '/lGT+0H5L5zbllWL' },
+    { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: 'f7de7dd72c1ab64e2cae90a2', credential: '/lGT+0H5L5zbllWL' },
   ],
 };
 
@@ -129,7 +133,7 @@ async function init() {
 
   try {
     localStream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
       audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 48000 },
     });
     localVid.srcObject = localStream;
@@ -235,35 +239,50 @@ function renderLoop(now) {
   if (now && now - lastFrameTime < FRAME_MS) return;
   lastFrameTime = now || 0;
 
-  stepPanels();
-
   ctx.fillStyle = '#111';
   ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
   const hasLocal  = localStream  && localVid.readyState  >= 2;
   const hasRemote = remoteStream && remoteVid.readyState >= 2;
 
-  // Draw largest panel first so a smaller picture-in-picture lands on top
-  const drawList = [
-    { video: hasRemote ? remoteVid : null, panel: panels.remote, label: 'Host' },
-    { video: hasLocal  ? localVid  : null, panel: panels.local,  label: 'You'  },
-  ];
-  drawList.sort((a, b) => (b.panel.cW * b.panel.cH) - (a.panel.cW * a.panel.cH));
-  for (const d of drawList) drawPanel(d.video, d.panel, d.label);
-
-  // Dividers
-  const splitAlpha = currentLayout === LAYOUT.SPLIT ? Math.min(panels.remote.cA, panels.local.cA) : 0;
-  if (splitAlpha > 0.05) {
-    ctx.fillStyle = `rgba(255,255,255,${0.08 * splitAlpha})`;
-    ctx.fillRect(panels.remote.cX + panels.remote.cW - 1, 0, 2, CANVAS_H);
+  // The host sends a ready-made "program feed" — the exact composed picture
+  // (content + both faces). The guest just displays it full-screen.
+  if (hasRemote) {
+    drawCover(remoteVid, 0, 0, CANVAS_W, CANVAS_H);
+  } else {
+    ctx.fillStyle = '#1c1c1c';
+    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
   }
 
-  if (currentLayout === LAYOUT.MEDIA && panels.remote.cW < CANVAS_W - 10) {
-    ctx.fillStyle = `rgba(255,255,255,0.06)`;
-    ctx.fillRect(panels.remote.cX + panels.remote.cW - 1, 0, 2, CANVAS_H);
+  // Small low-latency self-view so the guest can frame themselves
+  if (hasLocal) {
+    const w = 220, h = 124, pad = 16;
+    const x = CANVAS_W - w - pad, y = CANVAS_H - h - pad;
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.6)';
+    ctx.shadowBlur  = 12;
+    ctx.fillStyle   = '#000';
+    ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
+    ctx.restore();
+    drawCover(localVid, x, y, w, h);
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.lineWidth   = 1.5;
+    ctx.strokeRect(x, y, w, h);
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.font = '11px system-ui';
+    ctx.fillText('You', x + 6, y + h - 6);
   }
 
   if (isRecording) drawRecBadge();
+}
+
+function drawCover(video, x, y, w, h) {
+  const vW = video.videoWidth || 1, vH = video.videoHeight || 1;
+  const vR = vW / vH, tR = w / h;
+  let sx, sy, sw, sh;
+  if (vR > tR) { sh = vH; sw = vH * tR; sx = (vW - sw) / 2; sy = 0; }
+  else         { sw = vW; sh = vW / tR; sx = 0; sy = (vH - sh) / 2; }
+  ctx.drawImage(video, sx, sy, sw, sh, x, y, w, h);
 }
 
 function drawPanel(video, panel, label) {
@@ -373,7 +392,7 @@ async function switchDevices() {
   try {
     const newStream = await navigator.mediaDevices.getUserMedia({
       video: { deviceId: camId ? { exact: camId } : undefined,
-               width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
+               width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
       audio: { deviceId: micId ? { exact: micId } : undefined,
                echoCancellation: true, noiseSuppression: true, sampleRate: 48000 },
     });

@@ -16,7 +16,11 @@ const LAYOUT = {
 const ICE = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun.relay.metered.ca:80' },
+    { urls: 'turn:global.relay.metered.ca:80',               username: 'f7de7dd72c1ab64e2cae90a2', credential: '/lGT+0H5L5zbllWL' },
+    { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: 'f7de7dd72c1ab64e2cae90a2', credential: '/lGT+0H5L5zbllWL' },
+    { urls: 'turn:global.relay.metered.ca:443',              username: 'f7de7dd72c1ab64e2cae90a2', credential: '/lGT+0H5L5zbllWL' },
+    { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: 'f7de7dd72c1ab64e2cae90a2', credential: '/lGT+0H5L5zbllWL' },
   ],
 };
 
@@ -28,9 +32,8 @@ let pc             = null;
 let localStream    = null;
 let remoteStream   = null;
 let screenStream   = null;
-let mediaStream    = null;
-let imageStream    = null;   // captureStream from offscreen canvas (image share)
-let contentImage   = null;   // HTMLImageElement for drawing image locally
+let contentImage   = null;   // HTMLImageElement for drawing the shared image
+let canvasStream   = null;   // the composited "program feed" sent to the guest
 let contentType    = null;   // 'screen' | 'video' | 'image'
 let currentLayout  = LAYOUT.SPLIT;
 let isRecording    = false;
@@ -166,7 +169,7 @@ async function init() {
 
   try {
     localStream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
       audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 48000 },
     });
     localVid.srcObject = localStream;
@@ -219,7 +222,19 @@ async function init() {
 async function buildPeerConnection() {
   if (pc) pc.close();
   pc = new RTCPeerConnection(ICE);
-  localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+
+  // Send the GUEST the composited canvas (the "program feed") — exactly the
+  // picture the host sees — plus the host mic. This means the guest always sees
+  // the full composition (content + both faces), in every layout.
+  // Both tracks go in ONE stream so the guest receives video + audio together.
+  if (!canvasStream) canvasStream = canvas.captureStream(30);
+  const programVideo = canvasStream.getVideoTracks()[0];
+  const micAudio     = localStream.getAudioTracks()[0];
+  const programStream = new MediaStream();
+  if (programVideo) programStream.addTrack(programVideo);
+  if (micAudio)     programStream.addTrack(micAudio);
+  if (programVideo) pc.addTrack(programVideo, programStream);
+  if (micAudio)     pc.addTrack(micAudio, programStream);
 
   pc.onicecandidate = ({ candidate }) => {
     if (candidate) socket.emit('signal', { roomId, data: { type: 'candidate', candidate } });
@@ -257,7 +272,7 @@ function renderLoop(now) {
   const hasLocal   = localStream  && localVid.readyState   >= 2;
   const hasRemote  = remoteStream && remoteVid.readyState  >= 2;
   const hasScreen  = screenStream && screenVid.readyState  >= 2;
-  const hasMedia   = mediaStream  && mediaVid.readyState   >= 2;
+  const hasMedia   = mediaVid.readyState >= 2;
 
   // Determine what the content panel shows
   const contentVid = contentType === 'video'  ? (hasMedia  ? mediaVid  : null)
@@ -465,20 +480,16 @@ async function switchDevices() {
   try {
     const newStream = await navigator.mediaDevices.getUserMedia({
       video: { deviceId: camId ? { exact: camId } : undefined,
-               width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
+               width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
       audio: { deviceId: micId ? { exact: micId } : undefined,
                echoCancellation: true, noiseSuppression: true, sampleRate: 48000 },
     });
 
-    const newV = newStream.getVideoTracks()[0];
     const newA = newStream.getAudioTracks()[0];
 
-    // Swap tracks into the peer connection (skip video if currently sharing content)
+    // The camera feeds the canvas (program feed) automatically via localVid, so
+    // we only need to swap the MIC track in the peer connection.
     if (pc) {
-      if (!contentType && newV) {
-        const vs = pc.getSenders().find(s => s.track?.kind === 'video');
-        if (vs) vs.replaceTrack(newV);
-      }
       const as = pc.getSenders().find(s => s.track?.kind === 'audio');
       if (as && newA) as.replaceTrack(newA);
     }
@@ -608,34 +619,23 @@ function setShareActive(active) {
     : '<span class="ctrl-icon">📤</span> Share Content';
 }
 
-function restoreCameraTrack() {
-  if (pc && localStream) {
-    const track  = localStream.getVideoTracks()[0];
-    const sender = pc.getSenders().find(s => s.track?.kind === 'video');
-    if (sender && track) sender.replaceTrack(track);
-  }
-}
+// With the program-feed model the host just draws the content into its own
+// canvas — the canvas stream carries it to the guest automatically. No more
+// track-swapping or offscreen canvases.
 
 function stopContentShare() {
   if (contentType === 'screen') {
     screenStream?.getTracks().forEach(t => t.stop());
     screenStream = null;
     screenVid.srcObject = null;
-    socket.emit('screen-share-change', { roomId, active: false });
   } else if (contentType === 'video') {
     mediaVid.pause();
     mediaVid.src = '';
-    mediaStream = null;
     document.getElementById('mediaControls').style.display = 'none';
-    socket.emit('media-share-change', { roomId, active: false });
   } else if (contentType === 'image') {
-    imageStream?.getTracks().forEach(t => t.stop());
-    imageStream = null;
     contentImage = null;
-    socket.emit('media-share-change', { roomId, active: false });
   }
   contentType = null;
-  restoreCameraTrack();
   setShareActive(false);
   setLayout(LAYOUT.SPLIT);
 }
@@ -646,15 +646,9 @@ async function startScreenShare() {
     screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
     screenVid.srcObject = screenStream;
     await screenVid.play().catch(() => {});
-
-    const track  = screenStream.getVideoTracks()[0];
-    const sender = pc?.getSenders().find(s => s.track?.kind === 'video');
-    if (sender && track) sender.replaceTrack(track);
-
-    track.addEventListener('ended', stopContentShare);
+    screenStream.getVideoTracks()[0].addEventListener('ended', stopContentShare);
     contentType = 'screen';
-    socket.emit('screen-share-change', { roomId, active: true });
-    setLayout(LAYOUT.SCREEN);
+    setLayout(LAYOUT.MEDIA);   // content + both faces stacked
     setShareActive(true);
   } catch (e) {
     if (e.name !== 'NotAllowedError') setStatus('Screen share failed: ' + e.message, 'error');
@@ -665,25 +659,14 @@ async function startScreenShare() {
 function startVideoShare(file) {
   mediaVid.src = URL.createObjectURL(file);
   mediaVid.loop = false;
-
   mediaVid.addEventListener('loadedmetadata', () => {
-    mediaStream = mediaVid.captureStream
-      ? mediaVid.captureStream()
-      : mediaVid.mozCaptureStream();
-
-    const track  = mediaStream.getVideoTracks()[0];
-    const sender = pc?.getSenders().find(s => s.track?.kind === 'video');
-    if (sender && track) sender.replaceTrack(track);
-
     mediaVid.play();
     contentType = 'video';
-    socket.emit('media-share-change', { roomId, active: true });
     setLayout(LAYOUT.MEDIA);
     setShareActive(true);
     document.getElementById('mediaControls').style.display = 'flex';
     updateMediaTime();
   }, { once: true });
-
   mediaVid.addEventListener('timeupdate', updateMediaTime);
   mediaVid.addEventListener('ended', stopContentShare);
 }
@@ -700,27 +683,8 @@ function updateMediaTime() {
 function startImageShare(file) {
   const img = new Image();
   img.onload = () => {
-    contentImage = img;
-
-    // Create an offscreen canvas to stream to the guest via WebRTC
-    const offscreen = document.createElement('canvas');
-    offscreen.width  = 1920;
-    offscreen.height = 1080;
-    const oc = offscreen.getContext('2d');
-    oc.fillStyle = '#000';
-    oc.fillRect(0, 0, 1920, 1080);
-    const scale = Math.min(1920 / img.naturalWidth, 1080 / img.naturalHeight);
-    const iw = img.naturalWidth  * scale;
-    const ih = img.naturalHeight * scale;
-    oc.drawImage(img, (1920 - iw) / 2, (1080 - ih) / 2, iw, ih);
-
-    imageStream = offscreen.captureStream(1);
-    const track  = imageStream.getVideoTracks()[0];
-    const sender = pc?.getSenders().find(s => s.track?.kind === 'video');
-    if (sender && track) sender.replaceTrack(track);
-
+    contentImage = img;          // drawn directly into the canvas program feed
     contentType = 'image';
-    socket.emit('media-share-change', { roomId, active: true });
     setLayout(LAYOUT.MEDIA);
     setShareActive(true);
   };
@@ -1102,13 +1066,13 @@ document.addEventListener('keydown', (e) => {
       }
       break;
     case 'arrowleft':  // nudge shared video back 5s
-      if (mediaStream && mediaVid.duration) {
+      if (contentType === 'video' && mediaVid.duration) {
         e.preventDefault();
         mediaVid.currentTime = Math.max(0, mediaVid.currentTime - 5);
       }
       break;
     case 'arrowright': // nudge shared video forward 5s
-      if (mediaStream && mediaVid.duration) {
+      if (contentType === 'video' && mediaVid.duration) {
         e.preventDefault();
         mediaVid.currentTime = Math.min(mediaVid.duration, mediaVid.currentTime + 5);
       }
