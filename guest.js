@@ -15,7 +15,11 @@ const LAYOUT = {
 const ICE = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun.relay.metered.ca:80' },
+    { urls: 'turn:global.relay.metered.ca:80',               username: 'f7de7dd72c1ab64e2cae90a2', credential: '/lGT+0H5L5zbllWL' },
+    { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: 'f7de7dd72c1ab64e2cae90a2', credential: '/lGT+0H5L5zbllWL' },
+    { urls: 'turn:global.relay.metered.ca:443',              username: 'f7de7dd72c1ab64e2cae90a2', credential: '/lGT+0H5L5zbllWL' },
+    { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: 'f7de7dd72c1ab64e2cae90a2', credential: '/lGT+0H5L5zbllWL' },
   ],
 };
 
@@ -134,6 +138,8 @@ async function init() {
     });
     localVid.srcObject = localStream;
     await localVid.play().catch(() => {});
+    setupLocalAnalyser();
+    await populateDevices();
   } catch (e) {
     setStatus('Camera/mic access denied — check browser permissions', 'error');
     return;
@@ -142,7 +148,15 @@ async function init() {
   socket = io();
 
   socket.on('joined', () => setStatus('Joined room — waiting for host…', 'info'));
-  socket.on('error',  msg => setStatus('Error: ' + msg, 'error'));
+  socket.on('error', msg => setStatus('Error: ' + msg, 'error'));
+  socket.on('join-error', msg => {
+    setStatus(msg || 'Could not join room', 'warning');
+    // If the host simply hasn't opened the room yet, keep retrying quietly
+    clearTimeout(window._rejoinTimer);
+    window._rejoinTimer = setTimeout(() => {
+      socket.emit('join-room', { roomId, role: 'guest' });
+    }, 3000);
+  });
 
   socket.on('signal', async (data) => {
     if (!pc) await buildPeerConnection();
@@ -216,7 +230,15 @@ async function buildPeerConnection() {
 
 // ── Render loop ────────────────────────────────────────────────────────────
 
-function renderLoop() {
+// Cap rendering to ~30fps to ease CPU load
+const FRAME_MS = 1000 / 30;
+let lastFrameTime = 0;
+
+function renderLoop(now) {
+  requestAnimationFrame(renderLoop);
+  if (now && now - lastFrameTime < FRAME_MS) return;
+  lastFrameTime = now || 0;
+
   stepPanels();
 
   ctx.fillStyle = '#111';
@@ -225,9 +247,13 @@ function renderLoop() {
   const hasLocal  = localStream  && localVid.readyState  >= 2;
   const hasRemote = remoteStream && remoteVid.readyState >= 2;
 
-  // Remote always behind local
-  drawPanel(hasRemote ? remoteVid : null, panels.remote, 'Host');
-  drawPanel(hasLocal  ? localVid  : null, panels.local,  'You');
+  // Draw largest panel first so a smaller picture-in-picture lands on top
+  const drawList = [
+    { video: hasRemote ? remoteVid : null, panel: panels.remote, label: 'Host' },
+    { video: hasLocal  ? localVid  : null, panel: panels.local,  label: 'You'  },
+  ];
+  drawList.sort((a, b) => (b.panel.cW * b.panel.cH) - (a.panel.cW * a.panel.cH));
+  for (const d of drawList) drawPanel(d.video, d.panel, d.label);
 
   // Dividers
   const splitAlpha = currentLayout === LAYOUT.SPLIT ? Math.min(panels.remote.cA, panels.local.cA) : 0;
@@ -242,8 +268,6 @@ function renderLoop() {
   }
 
   if (isRecording) drawRecBadge();
-
-  requestAnimationFrame(renderLoop);
 }
 
 function drawPanel(video, panel, label) {
@@ -289,6 +313,93 @@ function drawRecBadge() {
   ctx.restore();
 }
 
+// ── Audio meter + device selection ─────────────────────────────────────────
+
+let audioCtx = null;
+let localAnalyser = null;
+
+function setupLocalAnalyser() {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    localAnalyser = audioCtx.createAnalyser();
+    localAnalyser.fftSize = 256;
+    audioCtx.createMediaStreamSource(localStream).connect(localAnalyser);
+  } catch (_) {}
+}
+
+function getRMS(analyser) {
+  if (!analyser) return 0;
+  const buf = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteTimeDomainData(buf);
+  let sum = 0;
+  for (const v of buf) { const n = (v - 128) / 128; sum += n * n; }
+  return Math.sqrt(sum / buf.length);
+}
+
+function updateMicMeter() {
+  const fill = document.getElementById('micMeterFill');
+  if (!fill || !localAnalyser) return;
+  const pct = Math.min(100, Math.round(getRMS(localAnalyser) * 280));
+  fill.style.width = pct + '%';
+  fill.classList.toggle('hot', pct > 85);
+}
+
+async function populateDevices() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams = devices.filter(d => d.kind === 'videoinput');
+    const mics = devices.filter(d => d.kind === 'audioinput');
+    const camSel = document.getElementById('cameraSelect');
+    const micSel = document.getElementById('micSelect');
+    const curCam = localStream?.getVideoTracks()[0]?.getSettings().deviceId;
+    const curMic = localStream?.getAudioTracks()[0]?.getSettings().deviceId;
+
+    camSel.innerHTML = '';
+    cams.forEach((d, i) => {
+      const o = document.createElement('option');
+      o.value = d.deviceId; o.textContent = d.label || `Camera ${i + 1}`;
+      if (d.deviceId === curCam) o.selected = true;
+      camSel.appendChild(o);
+    });
+    micSel.innerHTML = '';
+    mics.forEach((d, i) => {
+      const o = document.createElement('option');
+      o.value = d.deviceId; o.textContent = d.label || `Mic ${i + 1}`;
+      if (d.deviceId === curMic) o.selected = true;
+      micSel.appendChild(o);
+    });
+  } catch (_) {}
+}
+
+async function switchDevices() {
+  const camId = document.getElementById('cameraSelect').value;
+  const micId = document.getElementById('micSelect').value;
+  try {
+    const newStream = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: camId ? { exact: camId } : undefined,
+               width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
+      audio: { deviceId: micId ? { exact: micId } : undefined,
+               echoCancellation: true, noiseSuppression: true, sampleRate: 48000 },
+    });
+    const newV = newStream.getVideoTracks()[0];
+    const newA = newStream.getAudioTracks()[0];
+    if (pc) {
+      const vs = pc.getSenders().find(s => s.track?.kind === 'video');
+      if (vs && newV) vs.replaceTrack(newV);
+      const as = pc.getSenders().find(s => s.track?.kind === 'audio');
+      if (as && newA) as.replaceTrack(newA);
+    }
+    localStream.getTracks().forEach(t => t.stop());
+    localStream = newStream;
+    localVid.srcObject = localStream;
+    await localVid.play().catch(() => {});
+    setupLocalAnalyser();
+    setStatus('Device switched', 'success');
+  } catch (e) {
+    setStatus('Could not switch device', 'error');
+  }
+}
+
 // ── Recording ──────────────────────────────────────────────────────────────
 
 function getMimeType() {
@@ -296,10 +407,18 @@ function getMimeType() {
     .find(t => MediaRecorder.isTypeSupported(t)) || '';
 }
 
+// Chunked recording — uploads as it records so nothing sits in memory.
+let recFilename  = null;
+let uploadQueue  = [];
+let queueRunning = false;
+
 function startRecording() {
   if (isRecording) return;
   isRecording = true;
-  chunks = [];
+  uploadQueue = [];
+  const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  recFilename = `guest-${ts}.webm`;
+
   try {
     recorder = new MediaRecorder(localStream, {
       mimeType: getMimeType(),
@@ -311,27 +430,59 @@ function startRecording() {
     isRecording = false;
     return;
   }
-  recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-  recorder.start(1000);
+
+  recorder.ondataavailable = e => {
+    if (e.data && e.data.size > 0) { uploadQueue.push(e.data); processQueue(); }
+  };
+  recorder.start(2000);
   setStatus('Recording…', 'recording');
+}
+
+async function processQueue() {
+  if (queueRunning) return;
+  queueRunning = true;
+  isUploading = true;
+  showProgress(null); // indeterminate "saving" indicator
+  while (uploadQueue.length) {
+    const chunk = uploadQueue.shift();
+    try {
+      await fetch(`/upload-chunk/${roomId}/${encodeURIComponent(recFilename)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: chunk,
+      });
+    } catch (_) {
+      uploadQueue.unshift(chunk);
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  }
+  queueRunning = false;
+  if (!isRecording) { isUploading = false; }
 }
 
 function stopRecording() {
   if (!isRecording) return;
   isRecording = false;
   recorder.onstop = async () => {
-    const blob = new Blob(chunks, { type: getMimeType() });
-    const ts   = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-    await uploadFile(blob, `guest-${ts}.webm`);
+    setStatus('Saving…', 'info');
+    while (uploadQueue.length || queueRunning) {
+      await new Promise(r => setTimeout(r, 200));
+    }
+    isUploading = false;
+    hideProgress();
+    setStatus('Upload complete! You can close this tab now.', 'success');
   };
   recorder.stop();
-  setStatus('Recording stopped — uploading…', 'info');
+  setStatus('Recording stopped — saving…', 'info');
 }
 
 // ── Upload ─────────────────────────────────────────────────────────────────
 
+let isUploading = false;
+
 function uploadFile(blob, filename) {
   return new Promise(resolve => {
+    isUploading = true;
     const form = new FormData();
     form.append('file', blob, filename);
     const xhr = new XMLHttpRequest();
@@ -339,17 +490,35 @@ function uploadFile(blob, filename) {
     xhr.upload.onprogress = e => {
       if (e.lengthComputable) showProgress(Math.round(e.loaded / e.total * 100));
     };
-    xhr.onload  = () => { showProgress(100); setStatus('Upload complete!', 'success'); setTimeout(hideProgress, 3000); resolve(); };
-    xhr.onerror = () => { setStatus('Upload failed', 'error'); hideProgress(); resolve(); };
+    xhr.onload  = () => { isUploading = false; showProgress(100); setStatus('Upload complete! You can close this tab now.', 'success'); setTimeout(hideProgress, 4000); resolve(); };
+    xhr.onerror = () => { isUploading = false; setStatus('Upload failed', 'error'); hideProgress(); resolve(); };
     showProgress(0);
     xhr.send(form);
   });
 }
 
+// Warn the guest if they try to close while their recording is still uploading
+window.addEventListener('beforeunload', e => {
+  if (isUploading) {
+    e.preventDefault();
+    e.returnValue = 'Your recording is still uploading. Leaving now will lose it.';
+    return e.returnValue;
+  }
+});
+
 function showProgress(pct) {
   document.getElementById('uploadProgress').style.display = 'block';
-  document.getElementById('progressBar').style.width = pct + '%';
-  document.getElementById('progressPct').textContent = pct + '%';
+  const label = document.querySelector('#uploadProgress .progress-label');
+  if (pct === null) {
+    // Indeterminate "saving as you record" state
+    if (label) label.textContent = 'Saving recording…';
+    document.getElementById('progressBar').style.width = '100%';
+    document.getElementById('progressPct').textContent = '•••';
+  } else {
+    if (label) label.textContent = 'Uploading your recording…';
+    document.getElementById('progressBar').style.width = pct + '%';
+    document.getElementById('progressPct').textContent = pct + '%';
+  }
 }
 function hideProgress() { document.getElementById('uploadProgress').style.display = 'none'; }
 
@@ -380,5 +549,10 @@ document.getElementById('camBtn').addEventListener('click', () => {
     ? '<span class="ctrl-icon">📷</span> Show Cam'
     : '<span class="ctrl-icon">📷</span> Hide Cam';
 });
+
+document.getElementById('cameraSelect').addEventListener('change', switchDevices);
+document.getElementById('micSelect').addEventListener('change', switchDevices);
+navigator.mediaDevices.addEventListener('devicechange', populateDevices);
+setInterval(updateMicMeter, 80);
 
 init();
