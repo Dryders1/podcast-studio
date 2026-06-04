@@ -476,8 +476,8 @@ input[type="text"]:focus { border-color: var(--accent); }
 }
 
 /* ── Files ── */
-.files-section { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
-.file-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; flex: 1; }
+.files-section { flex-shrink: 0; display: flex; flex-direction: column; }
+.file-list { display: flex; flex-direction: column; gap: 6px; }
 
 .file-item {
   display: flex;
